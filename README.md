@@ -1,5 +1,5 @@
 # FilterMakerPro
-![version](https://img.shields.io/badge/version-0.3.9-blue?style=flat)
+![Static Badge](https://img.shields.io/badge/version-0.3.9-blue)
 
 FilterMakerPro is a Blender addon that generates pleated, zig-zag air filters from any shape. It is driven entirely from the N-panel in the 3D Viewport, requiring no node setup. You can create filters from lines, curves, mesh edges, or faces.
 
