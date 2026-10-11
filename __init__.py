@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Filter Maker Pro",
     "author": "Tooboi",
-    "version": (3, 5, 1),
+    "version": (0, 3, 5),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar (N) > Filter Maker",
     "description": "Pleated zig-zag filter generator driven entirely from the N-panel "
