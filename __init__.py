@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Filter Maker Pro",
     "author": "Tooboi",
-    "version": (0, 3, 9),
+    "version": (0, 3, 11),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar (N) > Filter Maker",
-    "description": "Pleated filter generator with editable outside-surface particle systems and presets.",
+    "description": "Pleated filter generator with curve-collection hair instancing and border-aware density masking.",
     "category": "Object",
 }
 
@@ -25,6 +25,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, FloatVectorPro
 from bpy.types import Operator, Panel, PropertyGroup
 from bpy.app.handlers import persistent
 from mathutils import Euler, Vector, geometry, noise
+from mathutils.kdtree import KDTree
 
 _busy = [False]
 _KEEP = [None]
@@ -421,8 +422,17 @@ def _face_component(bm, p, comp):
     if not comp:
         return
 
-    f0 = max(comp, key=lambda f: f.calc_area())
-    n0 = f0.normal.normalized()
+    # Use an area-weighted component normal rather than letting a single large
+    # polygon dictate the pleat frame. This is more stable on connected, curved
+    # selections and reduces apparent spacing drift as the pattern crosses faces.
+    weighted_normal = Vector((0.0, 0.0, 0.0))
+    for face in comp:
+        if face.normal.length > 1e-9:
+            weighted_normal += face.normal.normalized() * max(face.calc_area(), 1e-9)
+    if weighted_normal.length < 1e-8:
+        f0 = max(comp, key=lambda f: f.calc_area())
+        weighted_normal = f0.normal.copy()
+    n0 = weighted_normal.normalized() if weighted_normal.length > 1e-9 else Vector((0, 0, 1))
     ref = Vector((1.0, 0.0, 0.0))
     if abs(n0.dot(ref)) > 0.95:
         ref = Vector((0.0, 1.0, 0.0))
@@ -717,78 +727,115 @@ def _border_section(p, W, O, F, B):
     return out
 
 
-def _sweep_loop(co, nrm, inw_edge, sec):
+def _sweep_loop(co, nrm, inw_edge, sec, closed=True):
+    """Sweep a closed border profile along a closed loop or open boundary chain."""
     n, m_ = len(co), len(sec)
     verts = []
+    edge_count = n if closed else n - 1
+    if n < 2 or edge_count < 1 or not inw_edge:
+        return [], []
+
     for k in range(n):
-        a, b = inw_edge[k - 1], inw_edge[k]
-        m = a + b
-        if m.length < 1e-6:
-            m = b.copy()
-        if m.length > 1e-9:
-            m.normalize()
-        c = max(m.dot(b), 0.3)
-        miter = m / c
-        for s, h in sec:
-            verts.append(co[k] + miter * s + nrm[k] * h)
+        if closed:
+            a = inw_edge[(k - 1) % edge_count]
+            b = inw_edge[k % edge_count]
+        elif k == 0:
+            a = b = inw_edge[0]
+        elif k == n - 1:
+            a = b = inw_edge[-1]
+        else:
+            a, b = inw_edge[k - 1], inw_edge[k]
+        miter_dir = a + b
+        if miter_dir.length < 1e-6:
+            miter_dir = b.copy() if b.length > 1e-6 else a.copy()
+        if miter_dir.length > 1e-9:
+            miter_dir.normalize()
+        denom = max(miter_dir.dot(b) if b.length > 1e-9 else 1.0, 0.3)
+        miter = miter_dir / denom if miter_dir.length > 1e-9 else Vector((0, 0, 0))
+        for offset, height in sec:
+            verts.append(co[k] + miter * offset + nrm[k] * height)
+
     quads = []
-    for k in range(n):
+    for k in range(edge_count):
         k2 = (k + 1) % n
         for j in range(m_):
             j2 = (j + 1) % m_
-            quads.append((k * m_ + j, k2 * m_ + j, k2 * m_ + j2, k * m_ + j2))
+            quads.append((k * m_ + j, k2 * m_ + j,
+                          k2 * m_ + j2, k * m_ + j2))
     return verts, quads
 
 
 def build_border(p, rb):
+    """Build a frame along every boundary loop, including open boundary chains."""
     rb.verts.ensure_lookup_table()
     rb.edges.ensure_lookup_table()
     rb.faces.ensure_lookup_table()
     rb.verts.index_update()
     rb.normal_update()
-    bedges = [(e.verts[0].index, e.verts[1].index) for e in rb.edges if len(e.link_faces) == 1]
+    bedges = [(e.verts[0].index, e.verts[1].index)
+              for e in rb.edges if len(e.link_faces) == 1]
     if not bedges:
         return None
-    xs, ys, zs = [v.co.x for v in rb.verts], [v.co.y for v in rb.verts], [v.co.z for v in rb.verts]
+
+    xs = [v.co.x for v in rb.verts]
+    ys = [v.co.y for v in rb.verts]
+    zs = [v.co.z for v in rb.verts]
     ext = [max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)]
     mx = max(ext)
-    nz = [e for e in ext if e > 1e-6 * max(mx, 1e-9)]
+    nz = [value for value in ext if value > 1e-6 * max(mx, 1e-9)]
     small = min(nz) if nz else mx
     W, O, F, B, _fit = _border_dims(p, small)
     sec = _border_section(p, W, O, F, B)
     if len(sec) < 3:
         return None
+
     fb = bmesh.new()
-    for ids, cl in _chains(bedges):
-        if not cl or len(ids) < 3:
+    for ids, closed in _chains(bedges):
+        if len(ids) < (3 if closed else 2):
             continue
         P = [rb.verts[i] for i in ids]
         n = len(P)
+        segment_count = n if closed else n - 1
         inw = []
-        for k in range(n):
+        for k in range(segment_count):
             a, b = P[k], P[(k + 1) % n]
-            e = rb.edges.get((a, b))
-            dk = b.co - a.co
-            if e is None or not e.link_faces or dk.length < 1e-12:
+            edge = rb.edges.get((a, b))
+            tangent = b.co - a.co
+            if edge is None or not edge.link_faces or tangent.length < 1e-12:
                 inw.append(Vector((0, 0, 0)))
                 continue
-            f = e.link_faces[0]
-            iv = f.normal.cross(dk.normalized())
-            if iv.length < 1e-9:
+            face = edge.link_faces[0]
+            inward = face.normal.cross(tangent.normalized())
+            if inward.length < 1e-9:
                 inw.append(Vector((0, 0, 0)))
                 continue
-            iv.normalize()
-            if iv.dot(f.calc_center_median() - (a.co + b.co) * 0.5) < 0:
-                iv = -iv
-            inw.append(iv)
-        nrm = [v.normal.copy() if v.normal.length > 1e-9 else Vector((0, 0, 1)) for v in P]
-        verts, quads = _sweep_loop([v.co for v in P], nrm, inw, sec)
-        fv = [fb.verts.new(c) for c in verts]
+            inward.normalize()
+            if inward.dot(face.calc_center_median() - (a.co + b.co) * 0.5) < 0:
+                inward.negate()
+            inw.append(inward)
+
+        normals = [v.normal.copy() if v.normal.length > 1e-9 else Vector((0, 0, 1)) for v in P]
+        verts, quads = _sweep_loop([v.co for v in P], normals, inw, sec, closed=closed)
+        if not verts:
+            continue
+        fv = [fb.verts.new(co) for co in verts]
         for q in quads:
             try:
                 fb.faces.new([fv[i] for i in q])
             except ValueError:
                 pass
+
+        # A non-cyclic boundary needs caps so its frame is a closed, printable mesh.
+        if not closed:
+            try:
+                fb.faces.new(fv[:len(sec)])
+            except ValueError:
+                pass
+            try:
+                fb.faces.new(fv[(n - 1) * len(sec):n * len(sec)])
+            except ValueError:
+                pass
+
     if not fb.faces:
         fb.free()
         return None
@@ -962,6 +1009,262 @@ def build_cutter(p, src):
 
 
 # ---------------------------------------------------------------------------
+# Curve-instanced hair, emitted directly from the filter object
+# ---------------------------------------------------------------------------
+
+_HAIR_PROFILES = (
+    # Each profile is normalized to a one-unit strand. Local +Z is the root-to-tip axis.
+    ("Soft Arc", ((0.0, 0.0, 0.0), (0.22, 0.05, 0.25), (0.78, 0.10, 0.68), (0.20, 0.0, 1.0))),
+    ("Lazy S", ((0.0, 0.0, 0.0), (-0.68, 0.18, 0.22), (0.72, -0.28, 0.55), (-0.18, 0.10, 0.80), (0.0, 0.0, 1.0))),
+    ("Hook", ((0.0, 0.0, 0.0), (0.72, 0.10, 0.24), (0.92, -0.18, 0.53), (0.12, 0.05, 0.82), (0.0, 0.0, 1.0))),
+    ("Wave", ((0.0, 0.0, 0.0), (-0.68, -0.20, 0.22), (0.48, 0.32, 0.47), (0.68, -0.18, 0.73), (0.0, 0.0, 1.0))),
+    ("Kink", ((0.0, 0.0, 0.0), (0.12, 0.62, 0.22), (-0.48, 0.48, 0.50), (0.56, -0.15, 0.76), (0.04, 0.0, 1.0))),
+    ("Corkscrew", ((0.0, 0.0, 0.0), (0.62, 0.42, 0.20), (-0.52, 0.54, 0.42), (-0.50, -0.46, 0.64), (0.45, -0.30, 0.84), (0.0, 0.0, 1.0))),
+    ("Fine Straight", ((0.0, 0.0, 0.0), (0.14, -0.02, 0.30), (-0.10, 0.06, 0.65), (0.0, 0.0, 1.0))),
+)
+
+
+def _hair_collection_for(obj, p):
+    """Return the per-filter collection of tapered Curve objects used as hair instances."""
+    coll = getattr(p, "hair_collection", None)
+    if coll is None or coll.name not in bpy.data.collections:
+        coll = bpy.data.collections.get(obj.name + " Hair Shapes")
+    if coll is None:
+        coll = bpy.data.collections.new(obj.name + " Hair Shapes")
+    try:
+        bpy.context.scene.collection.children.link(coll)
+    except Exception:
+        # Already linked to this scene, or linked through another collection.
+        pass
+    p.hair_collection = coll
+
+    curl_amp = max(0.035, min(0.42, 0.055 + max(0.0, p.hair_curl) * 0.18))
+    random_amp = max(0.0, min(0.16, p.hair_randomness * 0.035))
+    width_ratio = p.hair_width / max(p.hair_length, 1e-6)
+    bevel = max(0.00035, min(0.15, width_ratio * 0.5))
+    shape_params = (round(float(p.hair_curl), 4), round(float(p.hair_randomness), 4))
+    saved_params = (coll.get("fm_hair_curl", None), coll.get("fm_hair_randomness", None))
+    rebuild_profiles = (not coll.get("fm_hair_shapes_initialized", False)
+                        or saved_params != shape_params)
+
+    for shape_index, (shape_name, profile) in enumerate(_HAIR_PROFILES):
+        shape = next((o for o in coll.objects
+                      if o.type == 'CURVE' and o.get("fm_hair_shape_index") == shape_index), None)
+        created = shape is None
+        if created:
+            curve_data = bpy.data.curves.new("FM Hair Curve %02d" % (shape_index + 1), 'CURVE')
+            shape = bpy.data.objects.new("FM Hair Shape %02d" % (shape_index + 1), curve_data)
+            coll.objects.link(shape)
+            shape["fm_hair_shape_index"] = shape_index
+        curve_data = shape.data
+        curve_data.dimensions = '3D'
+        curve_data.resolution_u = 10
+        curve_data.render_resolution_u = 12
+        curve_data.bevel_depth = bevel
+        curve_data.bevel_resolution = 3
+        try:
+            curve_data.twist_smooth = 8
+        except Exception:
+            pass
+
+        # Preserve manual edits to curve control points during unrelated property
+        # changes. Rebuild profiles only on first generation or when curl/randomness
+        # controls change; width and material can safely update every time.
+        if created or rebuild_profiles or len(curve_data.splines) == 0:
+            for old_spline in list(curve_data.splines):
+                curve_data.splines.remove(old_spline)
+            spline = curve_data.splines.new('BEZIER')
+            spline.bezier_points.add(len(profile) - 1)
+            total = max(1, len(profile) - 1)
+            for i, (x, y, z) in enumerate(profile):
+                point = spline.bezier_points[i]
+                point.co = (x * curl_amp, y * (curl_amp * 0.70 + random_amp), z)
+                point.handle_left_type = 'AUTO'
+                point.handle_right_type = 'AUTO'
+                t = i / total
+                point.radius = max(0.018, (1.0 - t) ** 1.25)
+            spline.resolution_u = 10
+
+        curve_data.materials.clear()
+        if p.hair_material is not None:
+            curve_data.materials.append(p.hair_material)
+
+        # Keep source curves away from the model/camera. The particle system instances
+        # them in local coordinates, so their scene-space location is not inherited.
+        shape.location = (100000.0 + shape_index * 2.0, 100000.0, 100000.0)
+        shape.rotation_euler = (0.0, 0.0, 0.0)
+        shape.scale = (1.0, 1.0, 1.0)
+        shape.hide_render = False
+        try:
+            shape.hide_set(True)
+        except Exception:
+            pass
+
+    coll["fm_hair_shapes_initialized"] = True
+    coll["fm_hair_curl"] = shape_params[0]
+    coll["fm_hair_randomness"] = shape_params[1]
+    return coll
+
+
+def _hair_border_mask_weights(obj, p):
+    """Create vertex weights that suppress hair roots within the border's covered band."""
+    mesh = obj.data
+    count = len(mesh.vertices)
+    if count == 0:
+        return None
+
+    # Particle-system density groups are owned by the emitting object. Recreate our
+    # generated mask so stale assignments cannot survive a topology change.
+    mask_name = "FM Hair Border Mask"
+    old_group = obj.vertex_groups.get(mask_name)
+    if old_group is not None:
+        obj.vertex_groups.remove(old_group)
+    group = obj.vertex_groups.new(name=mask_name)
+
+    edge_uses = {}
+    for poly in mesh.polygons:
+        ids = list(poly.vertices)
+        for i, a in enumerate(ids):
+            b = ids[(i + 1) % len(ids)]
+            key = (a, b) if a < b else (b, a)
+            edge_uses[key] = edge_uses.get(key, 0) + 1
+    boundary_edges = [edge for edge, uses in edge_uses.items() if uses == 1]
+
+    weights = [1.0] * count
+    should_mask = bool(p.use_border and p.border_obj is not None and boundary_edges)
+    if should_mask:
+        # Include boundary vertices and segment midpoints so long edges do not leave
+        # gaps in the distance mask between vertices.
+        boundary_points = []
+        mw = obj.matrix_world
+        for a, b in boundary_edges:
+            pa = mw @ mesh.vertices[a].co
+            pb = mw @ mesh.vertices[b].co
+            boundary_points.append(pa)
+            boundary_points.append(pb)
+            boundary_points.append((pa + pb) * 0.5)
+        tree = KDTree(len(boundary_points))
+        for i, point in enumerate(boundary_points):
+            tree.insert(point, i)
+        tree.balance()
+
+        band = max(0.0, p.border_width) + max(0.0, p.border_overhang) + max(0.0, p.hair_width)
+        transition = max(band * 0.30, max(0.0, p.hair_width) * 2.0, 1e-5)
+        for vert in mesh.vertices:
+            _co, _index, dist = tree.find(mw @ vert.co)
+            if dist <= band:
+                weight = 0.0
+            elif dist >= band + transition:
+                weight = 1.0
+            else:
+                t = (dist - band) / transition
+                weight = t * t * (3.0 - 2.0 * t)
+            # Quantization batches vertex-group writes into a small number of calls.
+            weights[vert.index] = round(weight * 20.0) / 20.0
+
+    buckets = {}
+    for index, weight in enumerate(weights):
+        if weight > 0.0:
+            buckets.setdefault(weight, []).append(index)
+    for weight, indices in buckets.items():
+        group.add(indices, float(weight), 'REPLACE')
+    return group if should_mask else None
+
+
+def _update_hair_particles_on_filter(obj, p):
+    """Instance a collection of Curve strands directly on the generated filter mesh."""
+    # Remove legacy duplicate hair-emitter/detail meshes from previous addon versions.
+    _remove_child(p, "hair_obj")
+    _remove_child(p, "hair_geo_obj")
+
+    psys = next((item for item in obj.particle_systems if item.name == "Filter Maker Hair"), None)
+    if not p.use_hair:
+        if psys is not None:
+            psys.settings.count = 0
+            psys.vertex_group_density = ""
+        return
+
+    collection = _hair_collection_for(obj, p)
+    if psys is None:
+        psys = _ensure_particle_system(obj, "Filter Maker Hair")
+    settings = psys.settings
+    settings.type = 'HAIR'
+    settings.count = 0
+    settings.emit_from = 'FACE'
+    settings.distribution = 'JIT'
+    settings.use_even_distribution = True
+    settings.render_type = 'COLLECTION'
+    settings.instance_collection = collection
+    settings.use_whole_collection = False
+    settings.use_collection_pick_random = True
+    settings.use_global_instance = False
+    settings.use_rotation_instance = True
+    settings.use_scale_instance = True
+    settings.particle_size = max(0.001, p.hair_length)
+    settings.size_random = max(0.0, min(1.0, p.hair_length_var))
+    settings.display_percentage = 100
+    settings.display_method = 'RENDER'
+    settings.draw_step = 2
+    settings.hair_step = 4
+    settings.use_hair_bspline = True
+    try:
+        settings.use_rotations = True
+        settings.rotation_mode = 'NOR'
+        settings.phase_factor_random = 1.0
+    except Exception:
+        pass
+    try:
+        settings.use_modifier_stack = False
+    except Exception:
+        pass
+    psys.seed = int(p.hair_seed)
+
+    mask_group = _hair_border_mask_weights(obj, p)
+    psys.vertex_group_density = mask_group.name if mask_group is not None else ""
+    psys.invert_vertex_group_density = False
+
+    area = sum(poly.area for poly in obj.data.polygons)
+    settings.count = max(0, min(MAX_INST, int(round(area * max(0.0, p.hair_density) * 0.65))))
+    obj.update_tag(refresh={'DATA', 'OBJECT'})
+    try:
+        bpy.context.view_layer.update()
+    except Exception:
+        pass
+
+
+def _remove_hair_curve_collection(p):
+    """Delete this filter's generated curve-instance library when the filter is deleted."""
+    coll = getattr(p, "hair_collection", None)
+    if coll is None:
+        return
+    for source in list(coll.objects):
+        curve_data = source.data if source.type == 'CURVE' else None
+        bpy.data.objects.remove(source, do_unlink=True)
+        if curve_data is not None and curve_data.users == 0:
+            bpy.data.curves.remove(curve_data)
+    for parent in list(bpy.data.collections):
+        try:
+            if coll.name in parent.children:
+                parent.children.unlink(coll)
+        except Exception:
+            pass
+    try:
+        if coll.name in bpy.context.scene.collection.children:
+            bpy.context.scene.collection.children.unlink(coll)
+    except Exception:
+        pass
+    try:
+        if coll.users == 0:
+            bpy.data.collections.remove(coll)
+    except Exception:
+        pass
+    try:
+        p.hair_collection = None
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Hair and dust
 # ---------------------------------------------------------------------------
 
@@ -997,68 +1300,101 @@ def _rvec(rng):
             return v.normalized()
 
 
-def build_hair(fbm, surf, p):
+def build_hair(fbm, surf, p, density_scale=1.0):
+    """Build a smooth, tapered visual strand layer for use beside editable hair particles."""
     tris, areas, total = surf
     if not tris or total < 1e-12:
         return
     rng = random.Random(p.hair_seed)
-    for pt, n in _scatter(tris, areas, total, p.hair_density, rng):
+    density = max(0.0, p.hair_density * density_scale)
+    segments = 5
+    for pt, n in _scatter(tris, areas, total, density, rng):
         length = max(p.hair_length * (1 + p.hair_length_var * rng.uniform(-1, 1)), 1e-6)
-        dirv = (n + _rvec(rng) * p.hair_randomness).normalized()
+        normal = n.normalized() if n.length > 1e-9 else Vector((0, 0, 1))
+        dirv = (normal + _rvec(rng) * (p.hair_randomness * 0.55)).normalized()
         bend = _rvec(rng)
         bend = bend - dirv * bend.dot(dirv)
-        bend = bend.normalized() * (p.hair_curl * length) if bend.length > 1e-6 else Vector((0, 0, 0))
-        side = dirv.cross(_rvec(rng))
-        if side.length < 1e-6:
-            side = dirv.cross(Vector((1, 0, 0)))
-        side.normalize()
-        rows = []
-        for i in range(3):
-            tt = i / 3
-            pos = pt + dirv * (length * tt) + bend * tt * tt
-            w = p.hair_width * 0.5 * (1 - tt)
-            rows.append((fbm.verts.new(pos - side * w), fbm.verts.new(pos + side * w)))
-        tip = fbm.verts.new(pt + dirv * length + bend)
-        try:
-            for i in range(2):
-                fbm.faces.new((rows[i][0], rows[i][1], rows[i + 1][1], rows[i + 1][0]))
-            fbm.faces.new((rows[2][0], rows[2][1], tip))
-        except ValueError:
-            pass
+        bend = bend.normalized() * (p.hair_curl * length * 0.65) if bend.length > 1e-6 else Vector((0, 0, 0))
+
+        side_a = dirv.cross(_rvec(rng))
+        if side_a.length < 1e-6:
+            side_a = dirv.cross(Vector((1, 0, 0)))
+        side_a.normalize()
+        side_b = dirv.cross(side_a).normalized()
+        # Two crossed, tapered ribbons catch light from more viewing angles than
+        # a single flat strip while keeping the accessory mesh reasonably light.
+        for side in (side_a, side_b):
+            rows = []
+            for i in range(segments):
+                t = i / segments
+                pos = pt + dirv * (length * t) + bend * (t * t)
+                taper = (1.0 - t) ** 1.25
+                half_width = max(p.hair_width * 0.5 * taper, p.hair_width * 0.012)
+                rows.append((fbm.verts.new(pos - side * half_width),
+                             fbm.verts.new(pos + side * half_width)))
+            tip = fbm.verts.new(pt + dirv * length + bend)
+            for i in range(segments - 1):
+                try:
+                    face = fbm.faces.new((rows[i][0], rows[i][1], rows[i + 1][1], rows[i + 1][0]))
+                    face.smooth = True
+                except ValueError:
+                    pass
+            try:
+                face = fbm.faces.new((rows[-1][0], rows[-1][1], tip))
+                face.smooth = True
+            except ValueError:
+                pass
 
 
-def build_dust(fbm, surf, p):
+def build_dust(fbm, surf, p, density_scale=1.0):
+    """Build rounded, shaded dust specks as a visual layer beside editable particles."""
     tris, areas, total = surf
     if not tris or total < 1e-12:
         return
     rng = random.Random(p.dust_seed)
-    tet = [Vector(c) / math.sqrt(3) for c in ((1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1))]
-    for pt, n in _scatter(tris, areas, total, p.dust_density, rng):
+    phi = (1.0 + math.sqrt(5.0)) * 0.5
+    ico = [Vector(v) for v in (
+        (-1, phi, 0), (1, phi, 0), (-1, -phi, 0), (1, -phi, 0),
+        (0, -1, phi), (0, 1, phi), (0, -1, -phi), (0, 1, -phi),
+        (phi, 0, -1), (phi, 0, 1), (-phi, 0, -1), (-phi, 0, 1))]
+    for v in ico:
+        v.normalize()
+    ico_faces = (
+        (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
+        (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+        (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
+        (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1))
+    density = max(0.0, p.dust_density * density_scale)
+    for pt, n in _scatter(tris, areas, total, density, rng):
         r = max(p.dust_size * (1 + p.dust_size_var * rng.uniform(-1, 1)), 1e-6) * 0.5
         rot = Euler((rng.uniform(0, 6.283), rng.uniform(0, 6.283), rng.uniform(0, 6.283)))
         vs = []
-        for q in tet:
-            q = q.copy()
+        for base in ico:
+            q = base.copy()
             q.rotate(rot)
-            vs.append(fbm.verts.new(pt + n * (r * 0.3) + q * r))
-        for idx in ((0, 1, 2), (0, 3, 1), (0, 2, 3), (1, 3, 2)):
+            vs.append(fbm.verts.new(pt + n.normalized() * (r * 0.12) + q * r))
+        for idx in ico_faces:
             try:
-                fbm.faces.new([vs[i] for i in idx])
+                face = fbm.faces.new([vs[i] for i in idx])
+                face.smooth = True
             except ValueError:
                 pass
-    bmesh.ops.recalc_face_normals(fbm, faces=fbm.faces[:])
+    if fbm.faces:
+        bmesh.ops.recalc_face_normals(fbm, faces=fbm.faces[:])
 
 
 # ---------------------------------------------------------------------------
 # Regeneration / object children
 # ---------------------------------------------------------------------------
 
-CHILD_ATTRS = ("hair_obj", "dust_obj", "border_obj", "cutter_obj", "fuzz_obj")
+CHILD_ATTRS = ("hair_obj", "dust_obj", "hair_geo_obj", "dust_geo_obj", "border_obj", "cutter_obj", "fuzz_obj")
 
 
 _CHILD_SUFFIX = {
-    "hair_obj": "_Hair",
-    "dust_obj": "_Dust",
+    "hair_obj": "_HairParticles",
+    "dust_obj": "_DustParticles",
+    "hair_geo_obj": "_Hair",
+    "dust_geo_obj": "_Dust",
     "border_obj": "_Border",
     "cutter_obj": "_Cutter",
     "fuzz_obj": "_Fuzz",
@@ -1320,7 +1656,9 @@ def _dust_instance(material):
             mesh = bpy.data.meshes.new(name + " Mesh")
             mb = bmesh.new()
             try:
-                bmesh.ops.create_icosphere(mb, subdivisions=1, radius=0.5)
+                bmesh.ops.create_icosphere(mb, subdivisions=2, radius=0.5)
+                for face in mb.faces:
+                    face.smooth = True
                 mb.to_mesh(mesh)
             finally:
                 mb.free()
@@ -1343,6 +1681,10 @@ def _configure_particle_system(psys, p, count, kind, material):
     settings = psys.settings
     settings.type = 'HAIR'
     settings.count = max(0, min(MAX_INST, int(count)))
+    try:
+        psys.seed = int(p.hair_seed if kind == 'HAIR' else p.dust_seed)
+    except Exception:
+        pass
     if hasattr(settings, "emit_from"):
         settings.emit_from = 'FACE'
     if hasattr(settings, "distribution"):
@@ -1354,10 +1696,10 @@ def _configure_particle_system(psys, p, count, kind, material):
     if hasattr(settings, "display_method"):
         settings.display_method = 'RENDER'
     if hasattr(settings, "draw_step"):
-        settings.draw_step = 2
+        settings.draw_step = 3
     if hasattr(settings, "hair_step"):
-        # Blender restricts Hair step to at least two even for short instanced hairs.
-        settings.hair_step = 3 if kind == 'HAIR' else 2
+        # More interpolation steps keep short hairs smooth without a large cost.
+        settings.hair_step = 4 if kind == 'HAIR' else 2
     if hasattr(settings, "use_hair_bspline"):
         settings.use_hair_bspline = True
     # Property spelling differs across Blender versions; disable the source skin
@@ -1386,19 +1728,22 @@ def _configure_particle_system(psys, p, count, kind, material):
         if hasattr(settings, "particle_size"):
             settings.particle_size = 1.0
         if hasattr(settings, "radius_scale"):
-            settings.radius_scale = min(5.0, max(0.001, p.hair_width * 20.0))
+            # Width should scale against strand length. The old width*20 mapping
+            # produced almost invisible filaments for normal-sized filters.
+            ratio = p.hair_width / max(p.hair_length, 1e-6)
+            settings.radius_scale = min(0.5, max(0.015, ratio * 3.0))
         if hasattr(settings, "root_radius"):
             settings.root_radius = 1.0
         if hasattr(settings, "tip_radius"):
-            settings.tip_radius = 0.25
+            settings.tip_radius = 0.08
         if hasattr(settings, "normal_factor"):
-            settings.normal_factor = max(0.0, p.hair_randomness) * max(p.hair_length, 1e-6)
+            settings.normal_factor = max(0.0, p.hair_randomness) * 0.15
         if hasattr(settings, "kink"):
             settings.kink = 'CURL' if p.hair_curl > 1e-4 else 'NO'
         if hasattr(settings, "kink_amplitude"):
-            settings.kink_amplitude = max(0.0, p.hair_curl) * max(p.hair_length, 1e-6) * 0.25
+            settings.kink_amplitude = max(0.0, p.hair_curl) * max(p.hair_length, 1e-6) * 0.45
         if hasattr(settings, "kink_frequency"):
-            settings.kink_frequency = 2.0
+            settings.kink_frequency = 2.5
     else:
         if hasattr(settings, "render_type"):
             settings.render_type = 'OBJECT'
@@ -1459,7 +1804,7 @@ def _update_particle_emitter(obj, p, src, bm, attr, suffix, system_name, kind, e
         except Exception:
             pass
         psys = _ensure_particle_system(emitter, system_name)
-        density = p.hair_density if kind == 'HAIR' else p.dust_density
+        density = (p.hair_density * 0.65) if kind == 'HAIR' else (p.dust_density * 0.70)
         count = min(MAX_INST, max(0, int(round(area * max(0.0, density)))))
         _configure_particle_system(psys, p, count, kind, material)
         try:
@@ -1467,6 +1812,37 @@ def _update_particle_emitter(obj, p, src, bm, attr, suffix, system_name, kind, e
         except Exception:
             pass
     finally:
+        surface.free()
+
+
+def _update_detail_geometry(obj, p, src, bm, attr, suffix, builder, enabled, material, density_scale):
+    """Refresh high-quality visible strand/speck geometry on the outer filter skin."""
+    if not enabled:
+        _remove_child(p, attr)
+        return
+    selected = _outside_surface_faces(bm, p, src)
+    if not selected:
+        _remove_child(p, attr)
+        return
+    surface = _particle_surface_bmesh(bm, selected)
+    detail_bm = bmesh.new()
+    try:
+        samples = _surface_samples(surface)
+        builder(detail_bm, samples, p, density_scale=density_scale)
+        if not detail_bm.faces:
+            _remove_child(p, attr)
+            return
+        detail_bm.normal_update()
+        accessory = _write_child(obj, p, attr, suffix, detail_bm, material)
+        accessory.name = obj.name + suffix
+        accessory.display_type = 'TEXTURED'
+        accessory.hide_render = False
+        try:
+            accessory.hide_set(False)
+        except Exception:
+            pass
+    finally:
+        detail_bm.free()
         surface.free()
 
 
@@ -1506,9 +1882,21 @@ def regenerate(obj):
         # Use actual editable Blender particle systems on emitter meshes made from
         # the outside skin only. These child objects remain after Finish (baking).
         try:
+            # The accessory meshes restore smooth, tapered strands and rounded dust
+            # specks. The separate particle emitters remain editable in Blender and
+            # use the same exposed-surface selection after Finish (baking).
+            mesh_layers = (
+                ("dust_geo_obj", "_Dust", build_dust, p.use_dust, p.dust_material, 0.30),
+            )
+            for attr, suffix, builder, enabled, material, detail_density in mesh_layers:
+                try:
+                    _update_detail_geometry(obj, p, src, bm, attr, suffix,
+                                            builder, enabled, material, detail_density)
+                except Exception as detail_exc:
+                    traceback.print_exc()
+                    p.last_error = "Hair/dust geometry update failed: %s" % detail_exc
+
             for args in (
-                (obj, p, src, bm, "hair_obj", "_HairParticles", "Filter Maker Hair",
-                 "HAIR", p.use_hair, p.hair_material),
                 (obj, p, src, bm, "dust_obj", "_DustParticles", "Filter Maker Dust",
                  "DUST", p.use_dust, p.dust_material),
             ):
@@ -1548,6 +1936,11 @@ def regenerate(obj):
             except Exception:
                 pass
         me.update()
+        try:
+            _update_hair_particles_on_filter(obj, p)
+        except Exception as hair_exc:
+            traceback.print_exc()
+            p.last_error = "Curve hair update failed: %s" % hair_exc
         sync_boolean(obj, p)
     except Exception as exc:
         traceback.print_exc()
@@ -1675,7 +2068,9 @@ def _len(name, default, desc, mn=0.0):
 
 class FilterProps(PropertyGroup):
     is_filter: BoolProperty(default=False)
-    mode: EnumProperty(items=[('CURVE', "Curve / Edges", ""), ('FACE', "Faces", "")], default='CURVE')
+    mode: EnumProperty(name="Source Type", items=[
+        ('CURVE', "Curve / Edges", "Pleat along a curve or selected edge chain", ic('CURVE_DATA'), 0),
+        ('FACE', "Faces", "Pleat a selected surface", ic('UV_FACESEL'), 1)], default='CURVE')
     src: StringProperty(options={'HIDDEN'})
     live: BoolProperty(name="Live Update", default=True,
                        description="Regenerate while dragging sliders (turn off for heavy filters)")
@@ -1699,8 +2094,8 @@ class FilterProps(PropertyGroup):
     pleat_angle: FloatProperty(name="Pleat Angle", default=0.0, subtype='ANGLE', unit='ROTATION',
                                description="Rotate pleat direction on faces", update=_upd)
     mesh_type: EnumProperty(name="Topology", items=[
-        ('QUADS', "Quads", "Quad topology; split n-gons only where needed"),
-        ('TRIS', "Triangles", "Fully triangulated mesh")], default='QUADS', update=_upd)
+        ('QUADS', "Quads", "Quad topology; split n-gons only where needed", ic('MESH_GRID'), 0),
+        ('TRIS', "Triangles", "Fully triangulated mesh", ic('MOD_TRIANGULATE'), 1)], default='QUADS', update=_upd)
     face_smooth: BoolProperty(
         name="Smooth Face Transitions", default=True, update=_upd,
         description="Subdivide and soften internal transitions in connected face selections before pleating")
@@ -1726,14 +2121,20 @@ class FilterProps(PropertyGroup):
     noise_strength: _len("Strength", 0.0015, "Displacement strength")
     noise_scale: _len("Size", 0.25, "Noise size", 0.0001)
     noise_depth: IntProperty(name="Depth", default=2, min=0, max=10, update=_upd)
-    noise_type: EnumProperty(name="Noise", items=[('SOFT', "Soft", ""), ('HARD', "Hard", "")], default='SOFT', update=_upd)
+    noise_type: EnumProperty(name="Noise", items=[
+        ('SOFT', "Soft", "Smooth, natural displacement", ic('SHADING_RENDERED'), 0),
+        ('HARD', "Hard", "Sharper, more broken-up displacement", ic('MOD_WIREFRAME'), 1)], default='SOFT', update=_upd)
     noise_basis: EnumProperty(name="Basis", items=[
-        ('BLENDER', "Blender Original", ""), ('PERLIN_NEW', "Improved Perlin", ""),
-        ('PERLIN_ORIGINAL', "Original Perlin", ""), ('VORONOI_F1', "Voronoi F1", ""),
-        ('VORONOI_F2F1', "Voronoi F2-F1", ""), ('VORONOI_CRACKLE', "Voronoi Crackle", ""),
-        ('CELLNOISE', "Cell Noise", "")], default='BLENDER', update=_upd)
+        ('BLENDER', "Blender Original", "Classic Blender texture", ic('TEXTURE'), 0),
+        ('PERLIN_NEW', "Improved Perlin", "Smooth improved Perlin field", ic('MOD_NOISE'), 1),
+        ('PERLIN_ORIGINAL', "Original Perlin", "Original Perlin field", ic('MOD_DISPLACE'), 2),
+        ('VORONOI_F1', "Voronoi F1", "Cellular distance field", ic('MESH_ICOSPHERE'), 3),
+        ('VORONOI_F2F1', "Voronoi F2-F1", "Cell edge detail", ic('MESH_UVSPHERE'), 4),
+        ('VORONOI_CRACKLE', "Voronoi Crackle", "Cracked cellular pattern", ic('MESH_CIRCLE'), 5),
+        ('CELLNOISE', "Cell Noise", "Discrete cellular noise", ic('MESH_GRID'), 6)], default='BLENDER', update=_upd)
     noise_direction: EnumProperty(name="Direction", items=[
-        ('XYZ', "RGB to XYZ", "Displace in all directions"), ('NORMAL', "Normal", "Displace along normals")],
+        ('XYZ', "RGB to XYZ", "Displace in all directions", ic('ORIENTATION_GLOBAL'), 0),
+        ('NORMAL', "Normal", "Displace along normals", ic('ORIENTATION_NORMAL'), 1)],
         default='XYZ', update=_upd)
     noise_seed: IntProperty(name="Seed", default=0, min=0, update=_upd)
 
@@ -1742,8 +2143,10 @@ class FilterProps(PropertyGroup):
     border_width: _len("Width", 0.03, "Frame reach inward from reference edge", 0.0001)
     border_overhang: _len("Overhang", 0.0, "Outward frame overhang")
     border_profile: EnumProperty(name="Profile", items=[
-        ('FLAT', "Flat", "Plain rectangular frame"), ('CHAMFER', "Chamfer", "Angled outer edges"),
-        ('ROUND', "Round", "Rounded outer edges"), ('LIP', "Lip", "Tall outer rim with lower inner step")],
+        ('FLAT', "Flat", "Plain rectangular frame", ic('MESH_PLANE'), 0),
+        ('CHAMFER', "Chamfer", "Angled outer edges", ic('MOD_BEVEL'), 1),
+        ('ROUND', "Round", "Rounded outer edges", ic('MESH_CIRCLE'), 2),
+        ('LIP', "Lip", "Tall outer rim with lower inner step", ic('MOD_SOLIDIFY'), 3)],
         default='FLAT', update=_upd)
     border_bevel: _len("Bevel Size", 0.01, "Chamfer / round radius, or lip step height")
     border_cuts: IntProperty(name="Round Cuts", default=3, min=1, max=12, update=_upd)
@@ -1779,17 +2182,19 @@ class FilterProps(PropertyGroup):
     # Boolean
     use_boolean: BoolProperty(name="Boolean", default=False, update=_upd_bool)
     boolean_source: EnumProperty(name="Cutter", items=[
-        ('BOX', "Bounding Box", "A clean box around the reference selection"),
-        ('ENVELOPE', "Envelope", "Reference shape thickened to cover the pleats"),
-        ('OBJECT', "Object", "Any mesh object")], default='ENVELOPE', update=_upd_bool)
+        ('BOX', "Bounding Box", "A clean box around the reference selection", ic('CUBE'), 0),
+        ('ENVELOPE', "Envelope", "Reference shape thickened to cover the pleats", ic('MOD_ENVELOPE'), 1),
+        ('OBJECT', "Object", "Any mesh object", ic('OUTLINER_DATA_MESH'), 2)], default='ENVELOPE', update=_upd_bool)
     boolean_obj: PointerProperty(name="Object", type=bpy.types.Object, poll=_poll_mesh, update=_upd_bool)
     boolean_modifier_name: StringProperty(options={'HIDDEN'})
     boolean_op: EnumProperty(name="Operation", items=[
-        ('INTERSECT', "Intersect", "Keep only filter inside cutter"),
-        ('DIFFERENCE', "Difference", "Cut cutter out of filter"), ('UNION', "Union", "Merge with cutter")],
+        ('INTERSECT', "Intersect", "Keep only filter inside cutter", ic('SELECT_INTERSECT'), 0),
+        ('DIFFERENCE', "Difference", "Cut cutter out of filter", ic('SELECT_SUBTRACT'), 1),
+        ('UNION', "Union", "Merge with cutter", ic('SELECT_EXTEND'), 2)],
         default='DIFFERENCE', update=_upd_bool)
-    boolean_solver: EnumProperty(name="Solver", items=[('EXACT', "Exact", "More robust"), ('FAST', "Fast", "Quick preview")],
-                                 default='EXACT', update=_upd_bool)
+    boolean_solver: EnumProperty(name="Solver", items=[
+        ('EXACT', "Exact", "More robust handling of overlapping geometry", ic('CHECKMARK'), 0),
+        ('FAST', "Fast", "Quick preview solver", ic('MOD_TIME'), 1)], default='EXACT', update=_upd_bool)
     cutter_margin: FloatProperty(name="Trim Margin", default=0.0, soft_min=-1, soft_max=1,
                                  subtype='DISTANCE', unit='LENGTH', precision=4, update=_upd_bool)
     show_cutter: BoolProperty(name="Show Cutter", default=False, update=_upd_cutter_vis)
@@ -1799,8 +2204,11 @@ class FilterProps(PropertyGroup):
     border_material: PointerProperty(name="Border Material", type=bpy.types.Material, update=_upd)
     hair_material: PointerProperty(name="Hair Material", type=bpy.types.Material, update=_upd)
     dust_material: PointerProperty(name="Dust Material", type=bpy.types.Material, update=_upd)
-    hair_obj: PointerProperty(type=bpy.types.Object)
-    dust_obj: PointerProperty(type=bpy.types.Object)
+    hair_collection: PointerProperty(name="Hair Curve Library", type=bpy.types.Collection)
+    hair_obj: PointerProperty(type=bpy.types.Object)  # legacy emitter child; cleaned up on regeneration
+    dust_obj: PointerProperty(type=bpy.types.Object)  # editable particle emitter
+    hair_geo_obj: PointerProperty(type=bpy.types.Object)  # smooth visible strand mesh
+    dust_geo_obj: PointerProperty(type=bpy.types.Object)  # rounded visible dust mesh
     border_obj: PointerProperty(type=bpy.types.Object)
     cutter_obj: PointerProperty(type=bpy.types.Object)
     fuzz_obj: PointerProperty(type=bpy.types.Object)
@@ -2357,6 +2765,7 @@ class FILTER_OT_delete(Operator):
             _remove_source_boolean(ob, p)
             for attr in CHILD_ATTRS:
                 _remove_child(p, attr)
+            _remove_hair_curve_collection(p)
             me = ob.data
             bpy.data.objects.remove(ob, do_unlink=True)
             if me and me.users == 0:
@@ -2401,7 +2810,7 @@ def active_filter(context):
 def _counts(ob):
     p = ob.filter_maker
     v, f, ev, ef = len(ob.data.vertices), len(ob.data.polygons), 0, 0
-    for attr in ("hair_obj", "dust_obj", "border_obj"):
+    for attr in ("hair_obj", "dust_obj", "hair_geo_obj", "dust_geo_obj", "border_obj"):
         child = getattr(p, attr)
         if child is not None and child.type == 'MESH':
             ev += len(child.data.vertices)
@@ -2463,6 +2872,7 @@ class FILTER_SubPanel:
         return active_filter(context) is not None
 
     def draw_header(self, context):
+        # Use Blender's own monochrome line icon set for a native-looking UI.
         self.layout.label(text="", icon=ic(getattr(self, "header_icon", "INFO")))
 
     def P(self, context):
@@ -2592,7 +3002,7 @@ class FILTER_PT_border(FILTER_SubPanel, Panel):
 
     @safe_draw
     def draw_header(self, context):
-        self.layout.label(text="", icon=ic('MOD_SOLIDIFY'))
+        self.layout.label(text="", icon=ic(self.header_icon))
         ob = active_filter(context)
         if ob:
             self.layout.prop(ob.filter_maker, "use_border", text="")
@@ -2608,11 +3018,7 @@ class FILTER_PT_border(FILTER_SubPanel, Panel):
             row = layout.row()
             row.alignment = 'CENTER'
             row.template_icon(icon_value=icon_id, scale=7.0)
-        legend = layout.box()
-        legend.label(text="How to read this cross-section", icon=ic('INFO'))
-        legend.label(text="Orange vertical = reference edge")
-        legend.label(text="Grey horizontal = filter surface")
-        legend.label(text="Teal dashed = front/back pleat reach")
+        layout.label(text="White = result   orange = profile points   grey = bounds")
         layout.prop(p, "border_profile", expand=True)
         c = layout.column(align=True)
         c.label(text="Inward / outward")
@@ -2644,7 +3050,7 @@ class FILTER_PT_hair(FILTER_SubPanel, Panel):
 
     @safe_draw
     def draw_header(self, context):
-        self.layout.label(text="", icon=ic('STRANDS'))
+        self.layout.label(text="", icon=ic(self.header_icon))
         ob = active_filter(context)
         if ob:
             self.layout.prop(ob.filter_maker, "use_hair", text="")
@@ -2659,8 +3065,9 @@ class FILTER_PT_hair(FILTER_SubPanel, Panel):
         for prop in ("hair_density", "hair_length", "hair_width", "hair_length_var", "hair_randomness", "hair_curl", "hair_seed"):
             c.prop(p, prop)
         c.separator()
-        c.label(text="Editable particle system on outside faces", icon=ic('INFO'))
-        c.label(text="After Finish: select the *_HairParticles object")
+        c.label(text="Random curve shapes instanced directly on the filter", icon=ic('INFO'))
+        c.label(text="Border-covered edges are masked automatically")
+        c.label(text="Edit strand variants in the Hair Shapes collection")
 
 
 class FILTER_PT_dust(FILTER_SubPanel, Panel):
@@ -2671,7 +3078,7 @@ class FILTER_PT_dust(FILTER_SubPanel, Panel):
 
     @safe_draw
     def draw_header(self, context):
-        self.layout.label(text="", icon=ic('PARTICLES'))
+        self.layout.label(text="", icon=ic(self.header_icon))
         ob = active_filter(context)
         if ob:
             self.layout.prop(ob.filter_maker, "use_dust", text="")
@@ -2686,8 +3093,8 @@ class FILTER_PT_dust(FILTER_SubPanel, Panel):
         for prop in ("dust_density", "dust_size", "dust_size_var", "dust_seed"):
             c.prop(p, prop)
         c.separator()
-        c.label(text="Editable instanced particles on outside faces", icon=ic('INFO'))
-        c.label(text="After Finish: select the *_DustParticles object")
+        c.label(text="Rounded specks + editable instanced particles", icon=ic('INFO'))
+        c.label(text="After Finish: select *_DustParticles to edit density/size")
 
 
 class FILTER_PT_boolean(FILTER_SubPanel, Panel):
@@ -2698,7 +3105,7 @@ class FILTER_PT_boolean(FILTER_SubPanel, Panel):
 
     @safe_draw
     def draw_header(self, context):
-        self.layout.label(text="", icon=ic('MOD_BOOLEAN'))
+        self.layout.label(text="", icon=ic(self.header_icon))
         ob = active_filter(context)
         if ob:
             self.layout.prop(ob.filter_maker, "use_boolean", text="")
@@ -2854,41 +3261,93 @@ def _paint_profile(pv, rp, rv, cuts):
 
 
 def _paint_border(pv, p):
-    """Readable border cross-section: frame fill first, guide lines drawn on top."""
+    """Draw a clear border/pleat schematic using the same palette as Pleat Bevel."""
     N = 160
-    cv = _Canvas(N, N)
+    cv = _Canvas(N, N)  # Same dark neutral background as the bevel graphic.
+    white = (0.92, 0.94, 1.0, 1.0)       # Actual result geometry
+    grey = (0.42, 0.42, 0.48, 1.0)       # Reference/bounding guides
+    orange = (1.0, 0.55, 0.12, 1.0)      # Profile transitions / control points
+    rail_fill = (0.22, 0.23, 0.27, 1.0)
+
     W, O, F, B, fit = _border_dims(p)
-    sec = _border_section(p, W, O, F, B)
-    span = max((W + O) * 1.65, (F + B) * 1.65, 1e-9)
-    sc = 124.0 / span
-    cs, ch = (W - O) / 2.0, (F - B) / 2.0
+    left_x, right_x = 27.0, 133.0
+    ratio_w = min(1.0, max(0.0, W / max(W + O, 1e-6)))
+    rail_w = 8.0 + 11.0 * ratio_w
+    inner_left, inner_right = left_x + rail_w, right_x - rail_w
 
-    def px(ss, h):
-        return N / 2 + (ss - cs) * sc, N / 2 + (h - ch) * sc
+    # Let the front/back settings alter the rail height, but clamp the drawing to
+    # readable bounds so extreme user values do not push the graphic off-canvas.
+    front_ratio = F / max(F + B, 1e-6)
+    back_ratio = B / max(F + B, 1e-6)
+    mid_y = 80.0
+    rail_top = max(43.0, mid_y - (14.0 + 17.0 * front_ratio))
+    rail_bottom = min(104.0, mid_y + (8.0 + 14.0 * back_ratio))
+    baseline = 111.0
 
-    # Draw the profile first so the reference markers remain visible over it.
-    poly = [px(ss, h) for ss, h in sec]
-    cv.fill(poly, (0.30, 0.37, 0.50, 1.0))
-    for i in range(len(poly)):
-        a, b = poly[i], poly[(i + 1) % len(poly)]
-        cv.line(a[0], a[1], b[0], b[1], (0.88, 0.91, 0.98, 1.0), 1.2)
+    # Quiet datum and vertical guides are deliberately drawn behind the result.
+    cv.line(12, baseline, 148, baseline, grey, 0.9)
+    cv.line(inner_left - 2.0, 22, inner_left - 2.0, 138, grey, 0.9)
+    cv.line(inner_right + 2.0, 22, inner_right + 2.0, 138, grey, 0.9)
 
-    # Reference surface: a solid grey horizontal datum through h = 0.
-    x0, y0 = px(-O - 0.22 * span, 0.0)
-    x1, _ = px(W + 0.22 * span, 0.0)
-    cv.line(x0, y0, x1, y0, (0.72, 0.74, 0.79, 1.0), 1.0)
+    def rail_polygon(x0, x1, y0, y1, left_rail):
+        profile = p.border_profile
+        bevel = max(2.0, min(6.0, p.border_bevel / max(W + O + F + B, 1e-6) * 24.0))
+        if profile == 'CHAMFER':
+            c = min(bevel, (x1 - x0) * 0.28, (y1 - y0) * 0.16)
+            return [(x0 + c, y0), (x1 - c, y0), (x1, y0 + c),
+                    (x1, y1 - c), (x1 - c, y1), (x0 + c, y1),
+                    (x0, y1 - c), (x0, y0 + c)]
+        if profile == 'ROUND':
+            r = min(bevel, (x1 - x0) * 0.34, (y1 - y0) * 0.22)
+            pts = []
+            for cx, cy, a0 in ((x0 + r, y0 + r, math.pi),
+                               (x1 - r, y0 + r, 1.5 * math.pi),
+                               (x1 - r, y1 - r, 0.0),
+                               (x0 + r, y1 - r, 0.5 * math.pi)):
+                for j in range(5):
+                    ang = a0 + j * (math.pi / 2.0) / 4.0
+                    pts.append((cx + r * math.cos(ang), cy + r * math.sin(ang)))
+            return pts
+        if profile == 'LIP':
+            step = min(bevel + 2.0, (x1 - x0) * 0.30, (y1 - y0) * 0.28)
+            if left_rail:
+                return [(x0, y1), (x1, y1), (x1, y0 + step),
+                        (x1 + step, y0 + step), (x1 + step, y0), (x0, y0)]
+            return [(x0, y1), (x1, y1), (x1, y0), (x0 - step, y0),
+                    (x0 - step, y0 + step), (x0, y0 + step)]
+        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
 
-    # Teal dashed lines mark the extent of the pleat on both sides of the surface.
-    if p.border_fit and fit > 0:
-        for h in (fit, -fit):
-            xa, ya = px(-O - 0.3 * span, h)
-            xb, _ = px(W + 0.22 * span, h)
-            cv.dashed(xa, ya, xb, ya, (0.16, 0.84, 0.78, 1.0), 1.0, 4, 3)
+    for is_left, x0, x1 in (
+            (True, left_x, inner_left), (False, inner_right, right_x)):
+        poly = rail_polygon(x0, x1, rail_top, rail_bottom, is_left)
+        cv.fill(poly, rail_fill)
+        for a, b in zip(poly, poly[1:] + poly[:1]):
+            cv.line(a[0], a[1], b[0], b[1], white, 1.2)
+        # Orange marker at the inner contact edge, like the cut points in the bevel preview.
+        contact_x = inner_left if is_left else inner_right
+        cv.stamp(contact_x, rail_bottom - 5.0, orange, 1.5)
 
-    # Reference boundary, drawn last to stand out from the frame profile.
-    xe, ye0 = px(0.0, -(B + 0.42 * (F + B)))
-    _, ye1 = px(0.0, F + 0.42 * (F + B))
-    cv.dashed(xe, max(3, ye0), xe, min(N - 4, ye1), (1.0, 0.48, 0.08, 1.0), 1.15, 5, 3)
+    # The pleat wave stays one continuous line between the two rails.
+    span = inner_right - inner_left
+    amp_ratio = min(1.0, max(0.0, p.pleat_depth / max(W + O, 1e-6)))
+    amplitude = 14.0 + 8.0 * amp_ratio
+    low = baseline - 19.0
+    high = max(rail_top + 8.0, low - amplitude)
+    waves = 6
+    pts = [(inner_left + 1.0, low)]
+    for i in range(1, waves * 2):
+        x = inner_left + 1.0 + (span - 2.0) * i / (waves * 2)
+        y = high if i % 2 else low
+        pts.append((x, y))
+    pts.append((inner_right - 1.0, low))
+    for a, b in zip(pts, pts[1:]):
+        cv.line(a[0], a[1], b[0], b[1], white, 1.45)
+    for x, y in pts[1:-1]:
+        cv.stamp(x, y, orange, 1.25)
+
+    # Small grey ticks reinforce the two boundary positions without adding color noise.
+    for x in (inner_left - 2.0, inner_right + 2.0):
+        cv.line(x - 3.0, 30.0, x + 3.0, 30.0, grey, 0.85)
     pv.image_size = (N, N)
     pv.image_pixels_float = cv.buf
 
@@ -2915,7 +3374,7 @@ def border_icon(p):
         return 0
     W, O, F, B, fit = _border_dims(p)
     key = (p.border_profile, round(W, 6), round(O, 6), round(F, 6), round(B, 6), round(fit, 6),
-           round(p.border_bevel, 6), int(p.border_cuts))
+           round(p.border_bevel, 6), int(p.border_cuts), round(p.pleat_depth, 6))
     if _pv_key.get("border") != key:
         try:
             _paint_border(pv, p)
