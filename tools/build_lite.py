@@ -65,11 +65,18 @@ STUBS = {
     "save_preset": "raise RuntimeError(%r)" % PRO_ONLY,
     "style_material": "return None",
     "_add_end_caps": "return",
+    "_add_grille": "return",
+    "_add_pull_tabs": "return",
+    "update_wire": "_remove_child(p, \"wire_obj\")",
+    "update_print": "_remove_child(p, \"print_obj\")",
 }
 # Pro-only definitions dropped from the Lite file entirely
 REMOVE = {"_build_media", "_build_frame", "FILTER_OT_game_ready", "FILTER_PT_game", "_realized_copy",
           "_split_sheet_uvs", "_Override", "_bm_to_object", "_game_collection", "_image_node",
-          "FILTER_OT_add_shape", "_shape_mesh"}
+          "FILTER_OT_add_shape", "_shape_mesh", "_grille_island", "_grille_lines", "_grille_open",
+          "_seg_dist2d", "_islands", "_outline_frames", "_tab_sides", "_plate", "build_wire_splines",
+          "_curve_child", "wire_material", "_text_shape", "_auto_size_label", "print_material",
+          "build_print", "_furnace_settings", "FILTER_PT_diecut"}
 tree = ast.parse(src)
 lines = src.split("\n")
 spans = []
@@ -101,7 +108,8 @@ src = "\n".join(lines)
 rep('''def regenerate(obj):''', '''_LITE_OFF = (("use_hair", False), ("use_dust", False), ("use_boolean", False),
              ("noise_strength", 0.0), ("border_profile", 'FLAT'), ("border_overhang", 0.0),
              ("border_caps", 'NONE'), ("filter_style", 'CUSTOM'), ("frame_style", 'CUSTOM'),
-             ("dirt", 0.0))
+             ("dirt", 0.0), ("grille_pattern", 'NONE'), ("use_wire", False), ("pull_tabs", 0),
+             ("use_print", False))
 
 
 def _lite_gate(p):
@@ -185,7 +193,7 @@ def _teardown():''')
 m = re.search(r"classes = \((.*?)\)\n", src, re.S)
 names = [n.strip() for n in m.group(1).replace("\n", " ").split(",") if n.strip()]
 drop = {"FILTER_PT_presets", "FILTER_PT_wear", "FILTER_PT_hair", "FILTER_PT_dust", "FILTER_PT_boolean",
-        "FILTER_PT_game", "FILTER_OT_game_ready", "FILTER_OT_add_shape",
+        "FILTER_PT_game", "FILTER_OT_game_ready", "FILTER_OT_add_shape", "FILTER_PT_diecut",
         "FILTER_OT_preset_apply", "FILTER_OT_preset_save", "FILTER_OT_preset_update",
         "FILTER_OT_preset_delete", "FILTER_OT_randomize", "FILTER_OT_use_reference"}
 unknown = drop - set(names)

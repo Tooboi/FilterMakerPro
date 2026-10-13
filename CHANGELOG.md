@@ -22,6 +22,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **Dirt.** One slider builds a dirt mask that is heaviest in the middle and in the folds and clean under the frame (mesh attributes `fm_dirt` and `fm_edge`, usable in your own shaders too).
 - **Add Filter Shape:** Panel, Round Panel, Cartridge (with end caps), V-Bank and Box Wrap at the 3D cursor.
 - **End caps** for ring-shaped filters (cartridges, box wraps), with an optional centre hole.
+- **Die-cut face** (Face, Wire & Print panel): a board sheet over the front, back or both sides of the frame with **Diamond** or **Square** openings. Set openings across, opening shape, strut width, corner cut and board thickness. It works on flat panels and also on curved filters, folded filters and rings (cartridge liners, box wraps).
+- **Wire mesh support:** wires pleated together with the media (Diamond or Square pattern, spacing, angle, radius, front or back), built as a light curve object.
+- **Pull tabs:** one or two board tabs sticking out of the long sides of the frame.
+- **Printed graphics:** a nominal size label (for example "16 x 25 x 1", worked out automatically or typed in), an airflow text and an arrow printed on the frame sides.
+- **White Board** frame material, a **Die-Cut Furnace** preset, and a **Die-Cut Furnace** shape (a 16 x 25 x 1 in filter with all of the above).
 - **Game-Ready panel:** one click builds a low-poly copy (low-poly pleats or a flat card), packs its UVs into 0-1, bakes Normal / AO / Base Color / Roughness from the full filter (including hair and dust) with Cycles, and can export FBX or glTF.
 
 ### Changed

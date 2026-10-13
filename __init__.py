@@ -1994,6 +1994,8 @@ def build_border(p, rb):
     caps = getattr(p, "border_caps", 'NONE')
     if caps != 'NONE' and len(loops_out) >= 2:
         _add_end_caps(fb, p, loops_out, caps)
+    _add_grille(fb, p, rb, W, F, B)
+    _add_pull_tabs(fb, p, rb, W, O, F, B)
     return fb
 
 
@@ -2062,6 +2064,771 @@ def _add_end_caps(fb, p, loops_out, caps):
 # ---------------------------------------------------------------------------
 # Boolean cutter
 # ---------------------------------------------------------------------------
+
+# ---- die-cut face, wire mesh support, pull tabs and printed graphics --------
+
+GRILLE_PATTERNS = (
+    ('NONE', "None", "Open frame, no face sheet"),
+    ('DIAMOND', "Diamond", "Die-cut board face with diamond openings, like a furnace filter"),
+    ('SQUARE', "Square", "Face sheet with a grid of rectangular openings"),
+)
+WIRE_PATTERNS = (
+    ('DIAMOND', "Diamond", "Diagonal wires pleated with the media: scallops across the pleats"),
+    ('SQUARE', "Square", "Wires along and across the pleats"),
+)
+PRINT_ATTR_MAT = "FM Print Ink"
+
+
+def _islands(faces):
+    seen, out = set(), []
+    for f in faces:
+        if f.index in seen:
+            continue
+        seen.add(f.index)
+        stack, comp = [f], []
+        while stack:
+            cur = stack.pop()
+            comp.append(cur)
+            for e in cur.edges:
+                for nf in e.link_faces:
+                    if nf.index not in seen:
+                        seen.add(nf.index)
+                        stack.append(nf)
+        out.append(comp)
+    return out
+
+
+def _grille_lines(pattern, uc, vc, pu, pv, sh, cu, cv, box):
+    """Cut lines (point, normal) of the opening pattern inside the (u, v) box."""
+    u0, u1, v0, v1 = box
+    corners = [(u - uc, v - vc) for u in (u0, u1) for v in (v0, v1)]
+    lines = []
+    if pattern == 'DIAMOND':
+        g = math.sqrt(1.0 / pu ** 2 + 1.0 / pv ** 2)
+        for sgn in (1.0, -1.0):
+            vals = [x / pu + sgn * y / pv + 0.5 for x, y in corners]
+            nrm = (1.0 / pu / g, sgn / pv / g)
+            for k in range(int(math.floor(min(vals))) - 1, int(math.ceil(max(vals))) + 2):
+                for off in (-sh, sh):
+                    a = k + off
+                    lines.append(((uc + (a - 0.5) * pu, vc), nrm))
+        for n in range(int(math.floor(2 * (u0 - uc) / pu)) - 1, int(math.ceil(2 * (u1 - uc) / pu)) + 2):
+            for off in (-cu, cu):
+                lines.append(((uc + n * pu / 2.0 + off, vc), (1.0, 0.0)))
+        for n in range(int(math.floor(2 * (v0 - vc) / pv)) - 1, int(math.ceil(2 * (v1 - vc) / pv)) + 2):
+            for off in (-cv, cv):
+                lines.append(((uc, vc + n * pv / 2.0 + off), (0.0, 1.0)))
+    else:
+        for n in range(int(math.floor((u0 - uc) / pu)) - 1, int(math.ceil((u1 - uc) / pu)) + 2):
+            for off in (-sh, sh):
+                lines.append(((uc + (n + 0.5) * pu + off, vc), (1.0, 0.0)))
+        for n in range(int(math.floor((v0 - vc) / pv)) - 1, int(math.ceil((v1 - vc) / pv)) + 2):
+            for off in (-sh, sh):
+                lines.append(((uc, vc + (n + 0.5) * pv + off), (0.0, 1.0)))
+    return lines
+
+
+def _grille_open(pattern, x, y, pu, pv, sh, cu, cv):
+    """True where (x, y) (relative to the pattern centre) is inside an opening."""
+    if pattern == 'DIAMOND':
+        a = x / pu + y / pv + 0.5
+        b = x / pu - y / pv + 0.5
+        if abs(a - round(a)) <= sh or abs(b - round(b)) <= sh:
+            return False
+        k, m = math.floor(a), math.floor(b)
+        ul, ur = pu * (k + m - 1) / 2.0, pu * (k + m + 1) / 2.0
+        vb, vt = pv * (k - m - 1) / 2.0, pv * (k - m + 1) / 2.0
+        return x - ul > cu and ur - x > cu and y - vb > cv and vt - y > cv
+    du = abs(x / pu - math.floor(x / pu + 0.5) - 0.5) * pu
+    dv = abs(y / pv - math.floor(y / pv + 0.5) - 0.5) * pv
+    return du > sh and dv > sh
+
+
+def _seg_dist2d(px, py, segs):
+    """Distance from 2D points to a set of 2D segments ((x0, y0, x1, y1), ...)."""
+    if not segs:
+        return [1e9] * len(px)
+    if np is not None:
+        S = np.array(segs, dtype=np.float64)
+        P = np.stack([np.asarray(px, dtype=np.float64), np.asarray(py, dtype=np.float64)], 1)
+        A, D = S[:, :2], S[:, 2:] - S[:, :2]
+        LL = np.maximum((D * D).sum(1), 1e-20)
+        out = np.empty(len(P))
+        chunk = max(1, 200000 // len(S))
+        for s in range(0, len(P), chunk):
+            Q = P[s:s + chunk, None, :]
+            t = np.clip(((Q - A[None]) * D[None]).sum(2) / LL[None], 0.0, 1.0)
+            V = Q - (A[None] + t[..., None] * D[None])
+            out[s:s + chunk] = np.sqrt((V * V).sum(2)).min(1)
+        return out.tolist()
+    out = []
+    for x, y in zip(px, py):
+        best = 1e18
+        for x0, y0, x1, y1 in segs:
+            dx, dy = x1 - x0, y1 - y0
+            ll = dx * dx + dy * dy
+            t = 0.0 if ll < 1e-20 else max(0.0, min(1.0, ((x - x0) * dx + (y - y0) * dy) / ll))
+            ex, ey = x - x0 - dx * t, y - y0 - dy * t
+            best = min(best, ex * ex + ey * ey)
+        out.append(math.sqrt(best))
+    return out
+
+
+def _grille_island(fb, p, comp, W, heights):
+    """Die-cut face sheets for one connected piece of the reference surface.
+
+    The piece is unrolled to (u, v) surface coordinates (so the pattern keeps its size
+    around folds and on curved panels), cut along the pattern lines in that flat space,
+    the openings are removed, and the result is mapped back onto the surface, lifted to
+    the frame's front / back face and given board thickness."""
+    tmp = bmesh.new()
+    try:
+        vm = {}
+        for f in comp:
+            vl = []
+            for v in f.verts:
+                if v not in vm:
+                    vm[v] = tmp.verts.new(v.co)
+                vl.append(vm[v])
+            try:
+                tmp.faces.new(vl)
+            except ValueError:
+                pass
+        if not tmp.faces:
+            return
+        tmp.verts.index_update()
+        tmp.normal_update()
+        bnd = set()
+        for e in tmp.edges:
+            if len(e.link_faces) == 1:
+                bnd.add((min(e.verts[0].index, e.verts[1].index), max(e.verts[0].index, e.verts[1].index)))
+        f0 = max(tmp.faces, key=lambda f: f.calc_area())
+        n0 = f0.normal.normalized()
+        if p.mode == 'CURVE':
+            ra = _height_dir(p)
+            ra = (ra - n0 * ra.dot(n0))
+            ra = ra.normalized() if ra.length > 1e-9 else Vector((0.0, 0.0, 1.0))
+            ua = ra.cross(n0).normalized()
+        else:
+            longest, ua = -1.0, None
+            for e in tmp.edges:
+                if len(e.link_faces) == 1:
+                    d = e.verts[1].co - e.verts[0].co
+                    d = d - n0 * d.dot(n0)
+                    if d.length > longest:
+                        longest, ua = d.length, d
+            if ua is None or ua.length < 1e-9:
+                ref = Vector((1.0, 0.0, 0.0)) if abs(n0.x) < 0.9 else Vector((0.0, 1.0, 0.0))
+                ua = ref - n0 * ref.dot(n0)
+            ua = ua.normalized()
+            ra = n0.cross(ua).normalized()
+        bmesh.ops.triangulate(tmp, faces=tmp.faces[:])
+        tmp.verts.index_update()
+        cos = [v.co.copy() for v in tmp.verts]
+        tris = [tuple(v.index for v in f.verts) for f in tmp.faces if len(f.verts) == 3]
+    finally:
+        tmp.free()
+    if not tris:
+        return
+    tri_uv, vnorm, ring = _surface_param(cos, tris, ua, ra)
+
+    g2 = bmesh.new()
+    try:
+        L = [g2.verts.layers.float.new(n) for n in ("px", "py", "pz", "nx", "ny", "nz")]
+        idl = g2.verts.layers.int.new("src")
+        wm = {}
+        for t, tri in enumerate(tris):
+            vl = []
+            for c in range(3):
+                u, v = tri_uv[t][c]
+                key = (tri[c], round(u * 1e6), round(v * 1e6))
+                bv = wm.get(key)
+                if bv is None:
+                    bv = g2.verts.new((u, v, 0.0))
+                    co, nn = cos[tri[c]], vnorm[tri[c]]
+                    for lay, val in zip(L, (co.x, co.y, co.z, nn.x, nn.y, nn.z)):
+                        bv[lay] = val
+                    bv[idl] = tri[c]
+                    wm[key] = bv
+                vl.append(bv)
+            try:
+                g2.faces.new(vl)
+            except ValueError:
+                pass
+        if not g2.faces:
+            return
+        # outline in (u, v): flat boundary edges that are also boundary edges of the piece
+        segs, lines = [], {}
+        for e in g2.edges:
+            if len(e.link_faces) != 1:
+                continue
+            a, b = e.verts
+            if (min(a[idl], b[idl]), max(a[idl], b[idl])) not in bnd:
+                continue
+            x0, y0, x1, y1 = a.co.x, a.co.y, b.co.x, b.co.y
+            dx, dy = x1 - x0, y1 - y0
+            ll = math.hypot(dx, dy)
+            if ll < 1e-12:
+                continue
+            segs.append((x0, y0, x1, y1))
+            nx, ny = -dy / ll, dx / ll
+            c = e.link_faces[0].calc_center_median()
+            if (c.x - x0) * nx + (c.y - y0) * ny < 0:
+                nx, ny = -nx, -ny
+            off = nx * x0 + ny * y0 + W
+            key = (round(math.atan2(ny, nx), 4), round(off, 6))
+            lines.setdefault(key, ((x0 + nx * W, y0 + ny * W), (nx, ny), (x0, y0, x1, y1)))
+        us = [v.co.x for v in g2.verts]
+        vs = [v.co.y for v in g2.verts]
+        box = (min(us), max(us), min(vs), max(vs))
+        span_u, span_v = box[1] - box[0], box[3] - box[2]
+        uc, vc = 0.5 * (box[0] + box[1]), 0.5 * (box[2] + box[3])
+        cells = max(1, int(p.grille_cells))
+        aspect = max(0.05, p.grille_aspect)
+        inner_u = (span_u - 2.0 * W) if ring <= 0.0 else 1e18
+        inner_v = span_v - 2.0 * W
+        if inner_u <= inner_v:
+            pu = max(inner_u, 1e-5) / cells
+            pv = pu * aspect
+        else:
+            pv = max(inner_v, 1e-5) / cells
+            pu = pv / aspect
+        if ring > 0.0:
+            pu = ring / max(1, round(ring / pu))
+        # the inset frame band: cut along each outline edge moved inward by W
+        for (pt, nn, seg) in lines.values():
+            x0, y0, x1, y1 = seg
+            reach = W + max(pu, pv)
+            flist = list(g2.faces)
+            cc = [f.calc_center_median() for f in flist]
+            dd = _seg_dist2d([c.x for c in cc], [c.y for c in cc], [seg])
+            near = [f for f, d in zip(flist, dd) if d < reach]
+            if not near:
+                continue
+            geom = list({v for f in near for v in f.verts}) + list({e for f in near for e in f.edges}) + near
+            bmesh.ops.bisect_plane(g2, geom=geom, dist=1e-7, plane_co=(pt[0], pt[1], 0.0),
+                                   plane_no=(nn[0], nn[1], 0.0))
+        pattern = p.grille_pattern
+        smin = min(pu, pv)
+        s_half = 0.5 * max(0.0, min(0.9, p.grille_strut)) * smin
+        if pattern == 'DIAMOND':
+            g = math.sqrt(1.0 / pu ** 2 + 1.0 / pv ** 2)
+            sh = s_half * g                                  # strut half width in lattice units
+            cu = sh * pu + max(0.0, min(0.95, p.grille_chamfer)) * (pu / 2.0 - sh * pu)
+            cv = sh * pv + max(0.0, min(0.95, p.grille_chamfer)) * (pv / 2.0 - sh * pv)
+        else:
+            sh, cu, cv = s_half, 0.0, 0.0
+        for pt, nn in _grille_lines(pattern, uc, vc, pu, pv, sh, cu, cv, box):
+            bmesh.ops.bisect_plane(g2, geom=g2.verts[:] + g2.edges[:] + g2.faces[:], dist=1e-7,
+                                   plane_co=(pt[0], pt[1], 0.0), plane_no=(nn[0], nn[1], 0.0))
+        faces = list(g2.faces)
+        cents = [f.calc_center_median() for f in faces]
+        dist = _seg_dist2d([c.x for c in cents], [c.y for c in cents], segs)
+        dead = [f for f, c, d in zip(faces, cents, dist)
+                if d > W * 0.999 and _grille_open(pattern, c.x - uc, c.y - vc, pu, pv, sh, cu, cv)]
+        if dead:
+            bmesh.ops.delete(g2, geom=dead, context='FACES')
+        if not g2.faces:
+            return
+        uvl = g2.loops.layers.uv.new(UV_LAYER)
+        for f in g2.faces:
+            for lp in f.loops:
+                lp[uvl].uv = (lp.vert.co.x, lp.vert.co.y)
+        tmpme = bpy.data.meshes.new(".FM grille")
+        try:
+            for sign, h in heights:
+                for v in g2.verts:
+                    nrm = Vector((v[L[3]], v[L[4]], v[L[5]]))
+                    nrm = nrm.normalized() if nrm.length > 1e-9 else Vector((0.0, 0.0, 1.0))
+                    v.co = Vector((v[L[0]], v[L[1]], v[L[2]])) + nrm * h
+                one = g2.copy()
+                try:
+                    bmesh.ops.remove_doubles(one, verts=one.verts[:], dist=1e-7)
+                    t = max(p.board_thickness, 1e-6)
+                    lay = [one.verts.layers.float.get(n) for n in ("nx", "ny", "nz")]
+                    ret = bmesh.ops.extrude_face_region(one, geom=one.verts[:] + one.edges[:] + one.faces[:],
+                                                        use_keep_orig=True)
+                    for v in ret["geom"]:
+                        if isinstance(v, bmesh.types.BMVert):
+                            nrm = Vector((v[lay[0]], v[lay[1]], v[lay[2]]))
+                            nrm = nrm.normalized() if nrm.length > 1e-9 else Vector((0.0, 0.0, 1.0))
+                            v.co += nrm * (t * sign)
+                    bmesh.ops.recalc_face_normals(one, faces=one.faces[:])
+                    for n in ("px", "py", "pz", "nx", "ny", "nz"):
+                        lay_ = one.verts.layers.float.get(n)
+                        if lay_ is not None:
+                            one.verts.layers.float.remove(lay_)
+                    lay_ = one.verts.layers.int.get("src")
+                    if lay_ is not None:
+                        one.verts.layers.int.remove(lay_)
+                    tmpme.clear_geometry()
+                    one.to_mesh(tmpme)
+                finally:
+                    one.free()
+                fb.from_mesh(tmpme)
+        finally:
+            bpy.data.meshes.remove(tmpme)
+    finally:
+        g2.free()
+
+
+def _add_grille(fb, p, rb, W, F, B):
+    """Die-cut face sheets over the front and / or back of the frame."""
+    if getattr(p, "grille_pattern", 'NONE') == 'NONE' or not rb.faces:
+        return
+    side = p.grille_side
+    heights = []
+    if side in {'FRONT', 'BOTH'}:
+        heights.append((1.0, F))
+    if side in {'BACK', 'BOTH'}:
+        heights.append((-1.0, -B))
+    rb.faces.ensure_lookup_table()
+    for comp in _islands(list(rb.faces)):
+        try:
+            _grille_island(fb, p, comp, W, heights)
+        except Exception:
+            traceback.print_exc()
+
+
+def _outline_frames(rb, tol):
+    """Straight outline runs of the reference surface: (start, end, normal, inward, length)."""
+    rb.verts.ensure_lookup_table()
+    rb.verts.index_update()
+    rb.normal_update()
+    pairs, edge_f = [], {}
+    for e in rb.edges:
+        if len(e.link_faces) == 1:
+            a, b = e.verts[0].index, e.verts[1].index
+            pairs.append((a, b))
+            edge_f[(min(a, b), max(a, b))] = e.link_faces[0]
+    cos = [v.co.copy() for v in rb.verts]
+    out = []
+    for ids, closed in _chains(pairs):
+        if closed:
+            ids = ids + [ids[0]]
+        pts = [cos[i] for i in ids]
+        keep = _dp_keep(pts, tol)
+        for a, b in zip(keep, keep[1:]):
+            i0, i1 = ids[a], ids[a + 1]
+            f = edge_f.get((min(i0, i1), max(i0, i1)))
+            d = pts[b] - pts[a]
+            if f is None or d.length < 1e-9:
+                continue
+            n = f.normal.normalized()
+            inw = n.cross(d.normalized())
+            if inw.length < 1e-9:
+                continue
+            inw.normalize()
+            if inw.dot(f.calc_center_median() - (pts[a] + pts[b]) * 0.5) < 0:
+                inw = -inw
+            out.append((pts[a].copy(), pts[b].copy(), n, inw, d.length))
+    return out
+
+
+def _tab_sides(frames, count):
+    if not frames or count <= 0:
+        return []
+    order = sorted(frames, key=lambda s: -s[4])
+    picked = [order[0]]
+    if count > 1:
+        opp = [s for s in order[1:] if s[3].dot(order[0][3]) < -0.9]
+        picked.append(opp[0] if opp else (order[1] if len(order) > 1 else None))
+    return [s for s in picked if s is not None]
+
+
+def _plate(bm, poly, base, t_axis, o_axis, n_axis, h0, h1):
+    """Extruded 2D polygon (t, o) between heights h0 and h1 along n_axis."""
+    bot = [bm.verts.new(base + t_axis * t + o_axis * o + n_axis * h0) for t, o in poly]
+    top = [bm.verts.new(base + t_axis * t + o_axis * o + n_axis * h1) for t, o in poly]
+    made = []
+    for ring in (bot, list(reversed(top))):
+        try:
+            made.append(bm.faces.new(ring))
+        except ValueError:
+            pass
+    k = len(poly)
+    for i in range(k):
+        j = (i + 1) % k
+        try:
+            made.append(bm.faces.new((bot[i], bot[j], top[j], top[i])))
+        except ValueError:
+            pass
+    return made
+
+
+def _add_pull_tabs(fb, p, rb, W, O, F, B):
+    count = int(getattr(p, "pull_tabs", 0))
+    if count <= 0 or not rb.faces:
+        return
+    small = _rb_small(rb) or 1.0
+    frames = _outline_frames(rb, max(W, 0.01 * small) * 0.05)
+    t = max(p.board_thickness, 1e-5)
+    front_face = p.grille_pattern != 'NONE' and p.grille_side in {'FRONT', 'BOTH'}
+    h0 = F
+    made = []
+    for a, b, n, inw, length in _tab_sides(frames, count):
+        d = (b - a) / length
+        out_v = -inw
+        w = min(p.tab_width, length * 0.8)
+        lt = max(p.tab_length, 1e-5)
+        base = a + d * (length * p.tab_position)
+        o0 = 0.0 if front_face else -0.5 * W
+        oe = O + lt
+        rr = min(w * 0.5, oe - o0) * 0.6
+        poly = [(-w / 2, o0), (w / 2, o0)]
+        steps = 6
+        for i in range(steps + 1):                     # outer right corner
+            ang = 0.5 * math.pi * i / steps
+            poly.append((w / 2 - rr + rr * math.cos(ang), oe - rr + rr * math.sin(ang)))
+        for i in range(steps + 1):                     # outer left corner
+            ang = 0.5 * math.pi + 0.5 * math.pi * i / steps
+            poly.append((-w / 2 + rr + rr * math.cos(ang), oe - rr + rr * math.sin(ang)))
+        clean = []
+        for q in poly:
+            if not clean or abs(q[0] - clean[-1][0]) + abs(q[1] - clean[-1][1]) > 1e-9:
+                clean.append(q)
+        made += _plate(fb, clean, base, d, out_v, n, h0, h0 + t)
+    if made:
+        bmesh.ops.recalc_face_normals(fb, faces=made)
+        uvl = fb.loops.layers.uv.get(UV_LAYER) or fb.loops.layers.uv.new(UV_LAYER)
+        for f in made:
+            for lp in f.loops:
+                c = lp.vert.co
+                lp[uvl].uv = (c.x + c.z, c.y + c.z)
+
+
+# ---- wire mesh support ----------------------------------------------------------
+
+def build_wire_splines(bm, p):
+    """Polylines of a wire mesh laid on the pleated sheet. The wires follow the unrolled
+    (U, V) coordinates of the media, so they are pleated with it."""
+    uvl = bm.loops.layers.uv.get(UV_LAYER)
+    if uvl is None or not bm.faces:
+        return []
+    sp = max(p.wire_spacing, 1e-5)
+    if p.wire_pattern == 'DIAMOND':
+        ang = max(math.radians(5.0), min(math.radians(85.0), p.wire_angle))
+        fams = [(math.cos(ang) / sp, math.sin(ang) / sp), (math.cos(ang) / sp, -math.sin(ang) / sp)]
+    else:
+        fams = [(1.0 / sp, 0.0), (0.0, 1.0 / sp)]
+    side = 1.0 if p.wire_side == 'FRONT' else -1.0
+    lift = max(p.wire_radius, 1e-6) * 1.05
+    if side < 0 and p.use_thickness:
+        lift += p.thickness
+    bm.normal_update()
+    tris = bm.calc_loop_triangles()
+    pos = {}
+    nxt = {}
+
+    def point(la, lb, fa, fb_, k):
+        va, vb = la.vert, lb.vert
+        key = (min(va.index, vb.index), max(va.index, vb.index), k,
+               round(min(fa, fb_) * 1e4), round(max(fa, fb_) * 1e4))
+        if key not in pos:
+            t = (k - fa) / (fb_ - fa)
+            co = va.co.lerp(vb.co, t)
+            nn = va.normal.lerp(vb.normal, t)
+            if nn.length > 1e-9:
+                nn.normalize()
+            pos[key] = co + nn * (lift * side)
+        return key
+
+    bm.verts.index_update()
+    for fi, (cu, cv) in enumerate(fams):
+        for tri in tris:
+            vals = [lp[uvl].uv.x * cu + lp[uvl].uv.y * cv for lp in tri]
+            lo, hi = min(vals), max(vals)
+            k0, k1 = math.floor(lo) + 1, math.floor(hi)
+            if k1 < k0:
+                continue
+            for k in range(k0, k1 + 1):
+                ends = []
+                for a in range(3):
+                    b = (a + 1) % 3
+                    fa, fb_ = vals[a], vals[b]
+                    if (fa < k) != (fb_ < k):
+                        ends.append(point(tri[a], tri[b], fa, fb_, (fi, k)))
+                if len(ends) == 2 and ends[0] != ends[1]:
+                    nxt.setdefault(ends[0], []).append(ends[1])
+                    nxt.setdefault(ends[1], []).append(ends[0])
+    # chain the segments into polylines
+    seen = set()
+    lines = []
+    starts = [k for k, v in nxt.items() if len(v) == 1] + list(nxt.keys())
+    for s in starts:
+        if s in seen:
+            continue
+        seen.add(s)
+        line = [s]
+        cur, prev = s, None
+        while True:
+            cand = [c for c in nxt.get(cur, ()) if c != prev and c not in seen]
+            if not cand:
+                break
+            prev, cur = cur, cand[0]
+            seen.add(cur)
+            line.append(cur)
+        if len(line) >= 2:
+            lines.append([pos[k] for k in line])
+    return lines
+
+
+def _curve_child(obj, p, attr, suffix):
+    ob = getattr(p, attr, None)
+    if ob is None or ob.name not in bpy.data.objects or ob.parent != obj or ob.type != 'CURVE':
+        ob = _find_child(obj, attr)
+        if ob is not None and ob.type != 'CURVE':
+            _remove_child(p, attr)
+            ob = None
+    if ob is None:
+        name = obj.name + suffix
+        cu = bpy.data.curves.new(name, 'CURVE')
+        cu.dimensions = '3D'
+        ob = bpy.data.objects.new(name, cu)
+        cols = obj.users_collection
+        (cols[0] if cols else bpy.context.scene.collection).objects.link(ob)
+        ob.parent = obj
+    setattr(p, attr, ob)
+    return ob
+
+
+def wire_material():
+    mat = style_material('FRAME', 'GALVANIZED')
+    return mat
+
+
+def update_wire(obj, p, bm):
+    if not getattr(p, "use_wire", False) or bm is None or not bm.faces:
+        _remove_child(p, "wire_obj")
+        return
+    lines = build_wire_splines(bm, p)
+    ob = _curve_child(obj, p, "wire_obj", "_Wire")
+    cu = ob.data
+    cu.splines.clear()
+    cu.dimensions = '3D'
+    cu.bevel_mode = 'ROUND'
+    cu.bevel_depth = max(p.wire_radius, 1e-6)
+    cu.bevel_resolution = 1
+    cu.use_fill_caps = True
+    cu.resolution_u = 1
+    for pts in lines:
+        s = cu.splines.new('POLY')
+        s.points.add(len(pts) - 1)
+        flat = []
+        for c in pts:
+            flat += (c.x, c.y, c.z, 1.0)
+        s.points.foreach_set("co", flat)
+    cu.materials.clear()
+    m = wire_material()
+    if m is not None:
+        cu.materials.append(m)
+    ob.hide_select = False
+
+
+# ---- printed graphics ---------------------------------------------------------
+
+_TEXT_CACHE = {}
+
+
+def _text_shape(body):
+    """Outline mesh of a text string: (verts2d, faces), cap height 1, origin bottom-left."""
+    hit = _TEXT_CACHE.get(body)
+    if hit is not None:
+        return hit
+    cu = bpy.data.curves.new(".FM text", 'FONT')
+    cu.body = body
+    cu.size = 1.0
+    ob = bpy.data.objects.new(".FM text", cu)
+    verts, faces = [], []
+    linked = False
+    try:
+        me = None
+        try:
+            me = ob.to_mesh()
+        except Exception:
+            me = None
+        if me is None or not len(me.polygons):
+            if me is not None:
+                ob.to_mesh_clear()
+            bpy.context.scene.collection.objects.link(ob)
+            linked = True
+            dg = bpy.context.evaluated_depsgraph_get()
+            dg.update()
+            ev = ob.evaluated_get(dg)
+            me = ev.to_mesh()
+            verts = [(v.co.x, v.co.y) for v in me.vertices]
+            faces = [tuple(pl.vertices) for pl in me.polygons]
+            ev.to_mesh_clear()
+        else:
+            verts = [(v.co.x, v.co.y) for v in me.vertices]
+            faces = [tuple(pl.vertices) for pl in me.polygons]
+            ob.to_mesh_clear()
+    except Exception:
+        traceback.print_exc()
+    finally:
+        if linked:
+            try:
+                bpy.context.scene.collection.objects.unlink(ob)
+            except Exception:
+                pass
+        bpy.data.objects.remove(ob)
+        bpy.data.curves.remove(cu)
+    if verts:
+        xs = [v[0] for v in verts]
+        ys = [v[1] for v in verts]
+        h = max(max(ys) - min(ys), 1e-9)
+        x0, y0 = min(xs), min(ys)
+        verts = [((x - x0) / h, (y - y0) / h) for x, y in verts]
+    res = (verts, faces)
+    if verts:
+        _TEXT_CACHE[body] = res
+    return res
+
+
+def _auto_size_label(frames, O, depth):
+    if not frames:
+        return ""
+    order = sorted(frames, key=lambda s: -s[4])
+    a = order[0][4] + 2 * O
+    b = None
+    for s in order[1:]:
+        if abs(s[3].dot(order[0][3])) < 0.3:
+            b = s[4] + 2 * O
+            break
+    if b is None:
+        return ""
+    def fmt(x):            # nominal inches, like real labels: 15.5 in actual size reads "16"
+        return "%d" % max(1, math.ceil(x / 0.0254 - 0.25))
+    w, h = sorted((a, b))
+    return "%s x %s x %s" % (fmt(w), fmt(h), fmt(depth))
+
+
+def print_material():
+    mat = bpy.data.materials.get(PRINT_ATTR_MAT)
+    if mat is not None and mat.get("fm_style_v") == STYLE_VERSION:
+        return mat
+    if mat is None:
+        mat = bpy.data.materials.new(PRINT_ATTR_MAT)
+    try:
+        nodes, links, bsdf, _out = _mat_nodes(mat)
+        _setin(bsdf, "Base Color", (0.03, 0.05, 0.09, 1.0))
+        _setin(bsdf, "Roughness", 0.55)
+        mat.diffuse_color = (0.03, 0.05, 0.09, 1.0)
+        mat["fm_style_v"] = STYLE_VERSION
+    except Exception:
+        traceback.print_exc()
+    return mat
+
+
+def build_print(p, rb, W, O, F, B):
+    """Printed size label, airflow arrow and text on the outer sides of the frame."""
+    small = _rb_small(rb) or 1.0
+    frames = _outline_frames(rb, max(W, 0.01 * small) * 0.05)
+    if not frames:
+        return None
+    H = F + B
+    longest = max(s[4] for s in frames)
+    sides = [s for s in sorted(frames, key=lambda s: -s[4]) if s[4] > 0.6 * longest and s[4] > 4.0 * H][:2]
+    if not sides:
+        return None
+    label = p.print_label.strip() or _auto_size_label(frames, O, H + (p.board_thickness if p.grille_pattern != 'NONE' else 0.0))
+    flow = p.print_text.strip()
+    pb = bmesh.new()
+    eps = max(2e-4, 0.002 * H)
+    th = 0.28 * H
+    for a, b, n, inw, length in sides:
+        tdir = (b - a) / length
+        tab_at = a + tdir * (length * p.tab_position)
+        out_v = -inw
+        if tdir.cross(n).dot(out_v) < 0:
+            tdir = -tdir
+            a, b = b, a
+        mid = (a + b) * 0.5
+        room = length
+        if p.pull_tabs > 0:
+            # keep the print clear of the pull tab: use the larger free part of the side
+            xt = (tab_at - mid).dot(tdir)
+            mid = mid - tdir * (0.25 * length * (1.0 if xt >= 0.0 else -1.0))
+            room = 0.5 * length
+        origin = mid + out_v * (O + eps) + n * (0.5 * (F - B))
+
+        def put2d(verts2d, faces, x0, y0, scale):
+            vs = [pb.verts.new(origin + tdir * (x0 + x * scale) + n * (y0 + y * scale)) for x, y in verts2d]
+            for f in faces:
+                try:
+                    pb.faces.new([vs[i] for i in f])
+                except ValueError:
+                    pass
+
+        items = []
+        if label:
+            items.append(("text", label))
+        if flow:
+            items.append(("text", flow))
+        items.append(("arrow", None))
+        widths = []
+        shapes = []
+        for kind, body in items:
+            if kind == "text":
+                vs2, fs2 = _text_shape(body)
+                w = max((v[0] for v in vs2), default=0.0) * th
+                shapes.append((vs2, fs2))
+                widths.append(w)
+            else:
+                shapes.append(None)
+                widths.append(0.45 * H)
+        gap = 0.6 * th
+        total = sum(widths) + gap * (len(widths) - 1)
+        scale = min(1.0, 0.8 * room / max(total, 1e-9))
+        x = -0.5 * total * scale
+        for (kind, _body), w, shp in zip(items, widths, shapes):
+            if kind == "text" and shp and shp[0]:
+                put2d(shp[0], shp[1], x, -0.5 * th * scale, th * scale)
+            elif kind == "arrow":
+                aw = w * scale
+                hh = 0.4 * H * scale
+                down = -1.0 if p.print_flow == 'TO_BACK' else 1.0
+                shaft = 0.18 * aw
+                head = 0.5 * aw
+                cx = x + 0.5 * aw
+                tip = down * hh
+                neck = down * (hh - 0.45 * aw)
+                tail = -down * hh
+                poly = [(cx - shaft, tail), (cx + shaft, tail), (cx + shaft, neck), (cx + head, neck),
+                        (cx, tip), (cx - head, neck), (cx - shaft, neck)]
+                if down < 0:
+                    poly.reverse()
+                vs = [pb.verts.new(origin + tdir * px + n * py) for px, py in poly]
+                try:
+                    pb.faces.new(vs)
+                except ValueError:
+                    pass
+            x += (w + gap) * scale
+    if not pb.faces:
+        pb.free()
+        return None
+    bmesh.ops.remove_doubles(pb, verts=pb.verts[:], dist=1e-9)
+    uvl = pb.loops.layers.uv.new(UV_LAYER)
+    for f in pb.faces:
+        for lp in f.loops:
+            c = lp.vert.co
+            lp[uvl].uv = (c.x + c.y, c.z)
+    return pb
+
+
+def update_print(obj, p, rb, W, O, F, B):
+    if not (getattr(p, "use_print", False) and p.use_border) or rb is None or not rb.faces:
+        _remove_child(p, "print_obj")
+        return
+    pb = build_print(p, rb, W, O, F, B)
+    if pb is None:
+        _remove_child(p, "print_obj")
+        return
+    try:
+        _write_child(obj, p, "print_obj", "_Print", pb, print_material())
+    finally:
+        pb.free()
+
 
 def _cut_pad(p):
     effective_thickness = p.thickness if getattr(p, "use_thickness", False) else 0.0
@@ -2228,7 +2995,8 @@ def build_cutter(p, src):
 # Regeneration / object children
 # ---------------------------------------------------------------------------
 
-CHILD_ATTRS = ("particles_obj", "hair_obj", "dust_obj", "border_obj", "cutter_obj", "fuzz_obj")
+CHILD_ATTRS = ("particles_obj", "hair_obj", "dust_obj", "border_obj", "cutter_obj", "fuzz_obj",
+               "wire_obj", "print_obj")
 
 
 _CHILD_SUFFIX = {
@@ -2238,6 +3006,8 @@ _CHILD_SUFFIX = {
     "border_obj": "_Border",
     "cutter_obj": "_Cutter",
     "fuzz_obj": "_Fuzz",
+    "wire_obj": "_Wire",
+    "print_obj": "_Print",
 }
 
 
@@ -2248,7 +3018,7 @@ def _find_child(obj, attr):
         return None
     pattern = re.compile(re.escape(suffix) + r"(?:\.\d{3})?$")
     for child in obj.children:
-        if child.type == 'MESH' and pattern.search(child.name):
+        if child.type in {'MESH', 'CURVE'} and pattern.search(child.name):
             return child
     return None
 
@@ -2259,10 +3029,13 @@ def _remove_child(p, attr):
     if ob is None and isinstance(owner, bpy.types.Object):
         ob = _find_child(owner, attr)
     if ob:
-        me = ob.data
+        data = ob.data
         bpy.data.objects.remove(ob, do_unlink=True)
-        if me and me.users == 0:
-            bpy.data.meshes.remove(me)
+        if data is not None and data.users == 0:
+            if isinstance(data, bpy.types.Mesh):
+                bpy.data.meshes.remove(data)
+            elif isinstance(data, bpy.types.Curve):
+                bpy.data.curves.remove(data)
     try:
         setattr(p, attr, None)
     except Exception:
@@ -2273,6 +3046,9 @@ def _write_child(obj, p, attr, suffix, cbm, mat):
     ob = getattr(p, attr, None)
     if ob is None or ob.name not in bpy.data.objects or ob.parent != obj:
         ob = _find_child(obj, attr)
+    if ob is not None and ob.type != 'MESH':
+        _remove_child(p, attr)
+        ob = None
     if ob is None:
         name = obj.name + suffix
         me = bpy.data.meshes.new(name)
@@ -3545,6 +4321,7 @@ FRAME_STYLES = (
     ('CARDBOARD', "Cardboard", "Brown corrugated cardboard"),
     ('PLASTIC', "Plastic", "Off-white moulded plastic"),
     ('RUBBER', "Rubber", "Black rubber / foam gasket"),
+    ('WHITE_BOARD', "White Board", "White coated paperboard, like die-cut furnace filter frames"),
 )
 _MEDIA = {
     'PAPER': dict(color=(0.86, 0.84, 0.76), rough=0.88, fiber=1.0, speck=0.0, sheen=0.25),
@@ -3560,6 +4337,7 @@ _FRAMES = {
     'CARDBOARD': dict(color=(0.42, 0.3, 0.18), rough=0.92, metal=0.0, pattern='FIBER'),
     'PLASTIC': dict(color=(0.78, 0.78, 0.75), rough=0.42, metal=0.0, pattern='NOISE'),
     'RUBBER': dict(color=(0.025, 0.025, 0.027), rough=0.86, metal=0.0, pattern='NOISE'),
+    'WHITE_BOARD': dict(color=(0.86, 0.86, 0.84), rough=0.82, metal=0.0, pattern='NOISE'),
 }
 _DIRT_COLOR = (0.2, 0.17, 0.13, 1.0)
 
@@ -3984,6 +4762,12 @@ def regenerate(obj):
         if want_masks:
             _write_masks(bm, p, dist, W)
         tick("noise_ms")
+        try:
+            update_wire(obj, p, bm)
+        except Exception as wire_exc:
+            traceback.print_exc()
+            p.last_error = "Wire mesh failed: %s" % wire_exc
+        tick("wire_ms")
         # bm.copy() keeps the vertex order, so the distances above still line up
         surface = bm.copy() if (p.use_hair or p.use_dust) else None
         if p.use_thickness and p.thickness > 1e-7 and bm.faces:
@@ -4025,8 +4809,15 @@ def regenerate(obj):
                     fb.free()
             else:
                 _remove_child(p, "border_obj")
+            try:
+                _W, _O, _F, _B, _fit = _border_dims(p, _rb_small(rb))
+                update_print(obj, p, rb, _W, _O, _F, _B)
+            except Exception as print_exc:
+                traceback.print_exc()
+                p.last_error = "Printed graphics failed: %s" % print_exc
         else:
             _remove_child(p, "border_obj")
+            _remove_child(p, "print_obj")
         tick("border_ms")
         apply_shading(bm, p)
         me = obj.data
@@ -4320,6 +5111,52 @@ class FilterProps(PropertyGroup):
     border_cap_hole: FloatProperty(name="Cap Hole", default=0.0, min=0.0, max=0.95, subtype='FACTOR',
                                    update=_upd, description="Round hole in the middle of each end cap")
 
+    # Die-cut face, wire mesh, pull tabs and printed graphics
+    grille_pattern: EnumProperty(name="Face", items=GRILLE_PATTERNS, default='NONE', update=_upd,
+                                 description="Board face over the pleats with die-cut openings (needs the border)")
+    grille_side: EnumProperty(name="Face Side", items=[
+        ('FRONT', "Front", "Face on the front only"),
+        ('BACK', "Back", "Face on the back only"),
+        ('BOTH', "Both", "Face on both sides, like most furnace filters")], default='BOTH', update=_upd)
+    grille_cells: IntProperty(name="Openings Across", default=4, min=1, max=60, update=_upd,
+                              description="Number of openings across the shorter side")
+    grille_aspect: FloatProperty(name="Opening Shape", default=1.0, min=0.2, max=5.0, update=_upd,
+                                 description="Height / width of each opening")
+    grille_strut: FloatProperty(name="Strut Width", default=0.14, min=0.02, max=0.8, subtype='FACTOR',
+                                update=_upd, description="Width of the board strips between openings "
+                                "(share of the opening size)")
+    grille_chamfer: FloatProperty(name="Corner Cut", default=0.15, min=0.0, max=0.95, subtype='FACTOR',
+                                  update=_upd, description="Cut the pointed corners of the diamond openings")
+    board_thickness: _len("Board Thickness", 0.0015, "Thickness of the die-cut face and pull tabs", 0.00001)
+    use_wire: BoolProperty(name="Wire Mesh", default=False, update=_upd,
+                           description="Wire support mesh pleated together with the media")
+    wire_pattern: EnumProperty(name="Wire Pattern", items=WIRE_PATTERNS, default='DIAMOND', update=_upd)
+    wire_spacing: _len("Wire Spacing", 0.03, "Distance between neighbouring wires, measured along the media",
+                       0.0005)
+    wire_angle: FloatProperty(name="Wire Angle", default=math.radians(50.0), min=math.radians(5.0),
+                              max=math.radians(85.0), subtype='ANGLE', update=_upd,
+                              description="Angle of the diagonal wires against the pleat ridges")
+    wire_radius: _len("Wire Radius", 0.0006, "Radius of the wire", 0.00001)
+    wire_side: EnumProperty(name="Wire Side", items=[
+        ('FRONT', "Front", "Wire on the front of the media"),
+        ('BACK', "Back", "Wire on the back of the media")], default='FRONT', update=_upd)
+    pull_tabs: IntProperty(name="Pull Tabs", default=0, min=0, max=2, update=_upd,
+                           description="Board tabs sticking out of the frame for pulling the filter out")
+    tab_width: _len("Tab Width", 0.04, "Width of each pull tab", 0.001)
+    tab_length: _len("Tab Length", 0.02, "How far each pull tab sticks out of the frame", 0.001)
+    tab_position: FloatProperty(name="Tab Position", default=0.5, min=0.05, max=0.95, subtype='FACTOR',
+                                update=_upd, description="Where along the side the tab sits")
+    use_print: BoolProperty(name="Printed Graphics", default=False, update=_upd,
+                            description="Size label, airflow text and arrow printed on the frame sides")
+    print_label: StringProperty(name="Size Label", default="", update=_upd,
+                                description="Text of the size label (empty: nominal size in inches)")
+    print_text: StringProperty(name="Text", default="AIR FLOW", update=_upd,
+                               description="Text printed next to the airflow arrow")
+    print_flow: EnumProperty(name="Airflow", items=[
+        ('TO_BACK', "Front to Back", "The arrow points from the front to the back"),
+        ('TO_FRONT', "Back to Front", "The arrow points from the back to the front")], default='TO_BACK',
+        update=_upd)
+
     # Hair
     use_hair: BoolProperty(name="Hair", default=False, update=_upd,
                            description="Hair strands: a particle system instancing generated strand curves")
@@ -4439,6 +5276,8 @@ class FilterProps(PropertyGroup):
     border_obj: PointerProperty(type=bpy.types.Object)
     cutter_obj: PointerProperty(type=bpy.types.Object)
     fuzz_obj: PointerProperty(type=bpy.types.Object)
+    wire_obj: PointerProperty(type=bpy.types.Object)
+    print_obj: PointerProperty(type=bpy.types.Object)
 
 
 # ---------------------------------------------------------------------------
@@ -4448,7 +5287,8 @@ class FilterProps(PropertyGroup):
 PRESET_SUBDIR = "filter_maker_pro"
 LEN_PROPS = {"thickness", "pleat_depth", "height", "noise_strength", "noise_scale", "border_width",
              "border_overhang", "border_bevel", "border_front", "border_back", "hair_length",
-             "hair_width", "dust_size", "cutter_margin", "hair_border_falloff", "dust_border_falloff"}
+             "hair_width", "dust_size", "cutter_margin", "hair_border_falloff", "dust_border_falloff",
+             "board_thickness", "wire_spacing", "wire_radius", "tab_width", "tab_length"}
 INV_LEN = {"pleat_density", "detail"}
 INV_AREA = {"hair_density", "dust_density"}
 VEC_PROPS = {"height_dir"}
@@ -4475,6 +5315,12 @@ DEFAULTS_NORM = {
     "use_boolean": False, "boolean_source": "ENVELOPE", "boolean_op": "DIFFERENCE", "boolean_solver": "EXACT",
     "cutter_margin": 0.0,
     "filter_style": "PAPER", "frame_style": "PAINTED", "dirt": 0.0,
+    "grille_pattern": "NONE", "grille_side": "BOTH", "grille_cells": 4, "grille_aspect": 1.0,
+    "grille_strut": 0.14, "grille_chamfer": 0.15, "board_thickness": 0.0015,
+    "use_wire": False, "wire_pattern": "DIAMOND", "wire_spacing": 0.03, "wire_angle": math.radians(50.0),
+    "wire_radius": 0.0006, "wire_side": "FRONT",
+    "pull_tabs": 0, "tab_width": 0.04, "tab_length": 0.02, "tab_position": 0.5,
+    "use_print": False, "print_flow": "TO_BACK",
 }
 PRESET_KEYS = tuple(DEFAULTS_NORM)
 
@@ -4502,6 +5348,18 @@ BUILTIN_PRESETS = {
     "Sharp Paper Fold": _mk(pleat_density=60.0, bevel_ridge=0.0, bevel_valley=0.0, bevel_cuts=1,
                             use_thickness=False, thickness=0.0, noise_strength=0.0005,
                             use_hair=False, use_dust=False),
+    "Die-Cut Furnace": _mk(filter_style="SYNTHETIC", frame_style="WHITE_BOARD",
+                           pleat_density=28.0, pleat_depth=0.012, use_thickness=False, thickness=0.0,
+                           bevel_ridge=0.45, bevel_valley=0.35, bevel_cuts=3,
+                           noise_strength=0.0006, noise_scale=0.3, noise_depth=1,
+                           use_border=True, border_width=0.035, border_profile="FLAT", border_fit=True,
+                           border_front=0.002, border_back=0.002,
+                           grille_pattern="DIAMOND", grille_side="BOTH", grille_cells=3, grille_aspect=1.0,
+                           grille_strut=0.14, grille_chamfer=0.15, board_thickness=0.0025,
+                           use_wire=True, wire_pattern="DIAMOND", wire_spacing=0.05,
+                           wire_angle=math.radians(50.0), wire_radius=0.0009, wire_side="FRONT",
+                           pull_tabs=1, tab_width=0.07, tab_length=0.03, use_print=True,
+                           use_hair=False, use_dust=False),
     "Dusty Used": _mk(frame_style="GALVANIZED", dirt=0.6,
                       pleat_density=55.0, pleat_depth=0.025, noise_strength=0.003,
                       noise_scale=0.3, noise_depth=1, use_hair=True, use_dust=True,
@@ -4785,12 +5643,14 @@ FILTER_SHAPES = (
     ('CARTRIDGE', "Cartridge", "Cylindrical cartridge with end caps"),
     ('VBANK', "V-Bank", "Media folded into V shapes inside one frame"),
     ('BOX', "Box Wrap", "Pleats running around four sides of a box"),
+    ('FURNACE', "Die-Cut Furnace", "16 x 25 x 1 in furnace filter: white board face with diamond "
+                                    "openings, wire mesh, pull tab and printed airflow label"),
 )
 
 
 def _shape_mesh(shape, o):
     """Source mesh (verts, faces) for a filter shape, sized by operator settings `o`."""
-    if shape == 'PANEL':
+    if shape in {'PANEL', 'FURNACE'}:
         w, h = o.width / 2.0, o.height
         return [(-w, 0, 0), (w, 0, 0), (w, 0, h), (-w, 0, h)], [(0, 1, 2, 3)]
     if shape == 'ROUND':
@@ -4820,6 +5680,26 @@ def _shape_mesh(shape, o):
     return [], []
 
 
+def _furnace_settings(p, short):
+    """Real-world sizes of a 1 in deep die-cut pleated furnace filter (short = shorter side)."""
+    p.filter_style, p.frame_style = 'SYNTHETIC', 'WHITE_BOARD'
+    p.pleat_density, p.pleat_depth = 45.0, 0.0095
+    p.use_thickness = False
+    p.bevel_ridge, p.bevel_valley, p.bevel_cuts = 0.45, 0.35, 3
+    p.noise_strength, p.noise_scale = 0.0004, 0.12
+    p.border_profile, p.border_fit = 'FLAT', True
+    p.border_width = 0.022
+    p.border_front = p.border_back = 0.001
+    p.grille_pattern, p.grille_side = 'DIAMOND', 'BOTH'
+    p.grille_cells, p.grille_aspect = 3, 1.0
+    p.grille_strut, p.grille_chamfer = 0.14, 0.15
+    p.board_thickness = 0.0012
+    p.use_wire, p.wire_pattern, p.wire_side = True, 'DIAMOND', 'FRONT'
+    p.wire_spacing, p.wire_radius, p.wire_angle = 0.03, 0.00045, math.radians(50.0)
+    p.pull_tabs, p.tab_width, p.tab_length = 1, 0.05, 0.018
+    p.use_print = True
+
+
 class FILTER_OT_add_shape(Operator):
     """Add a ready-made filter shape at the 3D cursor"""
     bl_idname = "filter.add_shape"
@@ -4838,7 +5718,7 @@ class FILTER_OT_add_shape(Operator):
         layout = self.layout
         layout.use_property_split = True
         layout.prop(self, "shape")
-        if self.shape in {'PANEL', 'VBANK', 'BOX'}:
+        if self.shape in {'PANEL', 'VBANK', 'BOX', 'FURNACE'}:
             layout.prop(self, "width")
         if self.shape in {'ROUND', 'CARTRIDGE'}:
             layout.prop(self, "radius")
@@ -4852,6 +5732,8 @@ class FILTER_OT_add_shape(Operator):
     def invoke(self, context, event):
         if self.shape == 'CARTRIDGE':
             self.height = 0.3
+        elif self.shape == 'FURNACE':
+            self.width, self.height = 0.3937, 0.6223            # 15.5 x 24.5 in actual size
         return self.execute(context)
 
     def execute(self, context):
@@ -4886,6 +5768,8 @@ class FILTER_OT_add_shape(Operator):
             p.face_smooth = False
         elif self.shape == 'BOX':
             p.border_caps = 'NONE'
+        elif self.shape == 'FURNACE':
+            _furnace_settings(p, min(self.width, self.height))
         p.live = True
         regenerate(ob)
         ob.name = "Filter " + label
@@ -5028,7 +5912,7 @@ class FILTER_OT_game_ready(Operator):
             if maps:
                 dg = context.evaluated_depsgraph_get()
                 high_coll = _game_collection(".FM bake high")
-                srcs = [ob] + [o for o in (p.border_obj,) if o is not None]
+                srcs = [ob] + [o for o in (p.border_obj, p.wire_obj, p.print_obj) if o is not None]
                 if p.game_particles and p.particles_obj is not None:
                     srcs.append(p.particles_obj)
                 for s in srcs:
@@ -5839,6 +6723,69 @@ class FILTER_PT_border(FILTER_SubPanel, Panel):
         row.prop(p, "border_auto_smooth_angle")
 
 
+class FILTER_PT_diecut(FILTER_SubPanel, Panel):
+    header_icon = "MESH_GRID"
+    bl_label = "Face, Wire & Print"
+    bl_idname = "FILTER_PT_diecut"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw_header(self, context):
+        self.layout.label(text="", icon=ic('MESH_GRID'))
+
+    @safe_draw
+    def draw(self, context):
+        p, layout = self.P(context), self.layout
+        if p is None:
+            return
+        if not p.use_border:
+            layout.label(text="The face, tabs and print need the Border", icon=ic('INFO'))
+        c = layout.column(align=True)
+        c.active = p.use_border
+        c.label(text="Die-cut face")
+        c.prop(p, "grille_pattern", text="Face")
+        sub = c.column(align=True)
+        sub.active = p.use_border and p.grille_pattern != 'NONE'
+        sub.prop(p, "grille_side", text="Side")
+        sub.prop(p, "grille_cells")
+        sub.prop(p, "grille_aspect")
+        sub.prop(p, "grille_strut", slider=True)
+        if p.grille_pattern == 'DIAMOND':
+            sub.prop(p, "grille_chamfer", slider=True)
+        c.prop(p, "board_thickness")
+        layout.separator()
+        c = layout.column(align=True)
+        c.prop(p, "use_wire")
+        sub = c.column(align=True)
+        sub.active = p.use_wire
+        sub.prop(p, "wire_pattern", text="Pattern")
+        sub.prop(p, "wire_spacing", text="Spacing")
+        if p.wire_pattern == 'DIAMOND':
+            sub.prop(p, "wire_angle", text="Angle")
+        sub.prop(p, "wire_radius", text="Radius")
+        sub.prop(p, "wire_side", text="Side")
+        layout.separator()
+        c = layout.column(align=True)
+        c.active = p.use_border
+        c.prop(p, "pull_tabs")
+        sub = c.column(align=True)
+        sub.active = p.use_border and p.pull_tabs > 0
+        sub.prop(p, "tab_width")
+        sub.prop(p, "tab_length")
+        sub.prop(p, "tab_position", slider=True)
+        layout.separator()
+        c = layout.column(align=True)
+        c.active = p.use_border
+        c.prop(p, "use_print")
+        sub = c.column(align=True)
+        sub.active = p.use_border and p.use_print
+        try:
+            sub.prop(p, "print_label", placeholder="Auto (nominal inches)")
+        except TypeError:
+            sub.prop(p, "print_label")
+        sub.prop(p, "print_text")
+        sub.prop(p, "print_flow")
+
+
 class FILTER_PT_hair(FILTER_SubPanel, Panel):
     header_art = "hair"
     header_icon = "STRANDS"
@@ -6451,7 +7398,7 @@ classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_add_shape, FILTER_OT_from_
            FILTER_OT_preset_save, FILTER_OT_preset_update, FILTER_OT_preset_delete,
            FILTER_OT_finish, FILTER_OT_delete, FILTER_PT_main, FILTER_PT_presets,
            FILTER_PT_pleats, FILTER_PT_bevel, FILTER_PT_shading, FILTER_PT_wear,
-           FILTER_PT_border, FILTER_PT_hair, FILTER_PT_dust, FILTER_PT_boolean,
+           FILTER_PT_border, FILTER_PT_diecut, FILTER_PT_hair, FILTER_PT_dust, FILTER_PT_boolean,
            FILTER_PT_materials, FILTER_PT_game, FILTER_OT_game_ready, FILTER_PT_actions)
 
 

@@ -847,6 +847,160 @@ def t_caps():
            after=len(p.border_obj.data.polygons))
 
 
+def render_material(name, objs, direction=(0.9, -1.6, 0.7), res=(1000, 1300), close=0.9):
+    """Material-preview style render (EEVEE, falling back to a quick Cycles render)."""
+    scene = bpy.context.scene
+    world = scene.world or bpy.data.worlds.new("FMTestWorld")
+    scene.world = world
+    try:
+        world.use_nodes = True
+        bg = world.node_tree.nodes.get("Background")
+        if bg is not None:
+            bg.inputs[0].default_value = (0.32, 0.34, 0.38, 1.0)
+            bg.inputs[1].default_value = 1.0
+    except Exception:
+        pass
+    lo, hi = bounds(objs)
+    center = (lo + hi) * 0.5
+    radius = max((hi - lo).length * 0.5, 1e-3)
+    sun = bpy.data.objects.get("FMTestSun")
+    if sun is None:
+        sun = bpy.data.objects.new("FMTestSun", bpy.data.lights.new("FMTestSun", 'SUN'))
+        scene.collection.objects.link(sun)
+    sun.data.energy = 3.0
+    sun.rotation_euler = (math.radians(50), math.radians(10), math.radians(35))
+    render(name + "_wb", objs, direction=direction, res=res, close=close)
+    engines = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
+    eng = next((e for e in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE") if e in engines), None)
+    for engine in ([eng] if eng else []) + ["CYCLES"]:
+        try:
+            scene.render.engine = engine
+            if engine == "CYCLES":
+                scene.cycles.samples = 24
+                scene.cycles.device = 'CPU'
+            scene.render.filepath = os.path.join(OUT, name + ".png")
+            bpy.ops.render.render(write_still=True)
+            log("  rendered", name + ".png", "with", engine)
+            return
+        except Exception:
+            log("  material render failed with", engine, traceback.format_exc().splitlines()[-1])
+
+
+def _first_hits(objs_a, objs_b, origins, direction):
+    """For each ray: True when it reaches objs_b before (or without) hitting objs_a."""
+    from mathutils.bvhtree import BVHTree
+    dg = bpy.context.evaluated_depsgraph_get()
+
+    def tree(objs):
+        vs, fs = [], []
+        for ob in objs:
+            ev = ob.evaluated_get(dg)
+            me = ev.to_mesh()
+            off = len(vs)
+            vs += [ob.matrix_world @ v.co for v in me.vertices]
+            fs += [[off + i for i in pl.vertices] for pl in me.polygons]
+            ev.to_mesh_clear()
+        return BVHTree.FromPolygons(vs, fs) if fs else None
+    ta, tb = tree(objs_a), tree(objs_b)
+    out = []
+    for o in origins:
+        ha = ta.ray_cast(o, direction) if ta else (None, None, None, None)
+        hb = tb.ray_cast(o, direction) if tb else (None, None, None, None)
+        da = ha[3] if ha[0] is not None else 1e9
+        db = hb[3] if hb[0] is not None else 1e9
+        out.append(db < da)
+    return out
+
+
+def t_diecut():
+    clear_scene()
+    t0 = time.time()
+    res = bpy.ops.filter.add_shape(shape='FURNACE', width=0.3937, height=0.6223)
+    ob = bpy.context.active_object
+    p = ob.filter_maker
+    secs = round(time.time() - t0, 2)
+    fr = p.border_obj
+    record("die-cut furnace filter builds", 'FINISHED' in res and not p.last_error and fr is not None,
+           seconds=secs, error=p.last_error, border_faces=len(fr.data.polygons) if fr else 0,
+           timings=dict(fm.LAST_TIMINGS))
+    if fr is None:
+        return
+    # rays through the face: some pass through the openings to the pleats, some hit the board
+    w, h = 0.3937, 0.6223
+    W = p.border_width
+    pts = [(-w / 2 + W + (w - 2 * W) * (i + 0.5) / 24, h * 0 + W + (h - 2 * W) * (j + 0.5) / 36)
+           for i in range(24) for j in range(36)]
+    fracs = {}
+    for side, y, d in (("front", 0.5, Vector((0, -1, 0))), ("back", -0.5, Vector((0, 1, 0)))):
+        hits = _first_hits([fr], [ob], [Vector((x, y, z)) for x, z in pts], d)
+        fracs[side] = round(sum(hits) / len(hits), 3)
+    record("die-cut face has openings on both sides",
+           all(0.3 < f < 0.9 for f in fracs.values()), open_fraction=fracs)
+    # wire mesh: a curve object whose wires sit on the pleated media
+    wo = p.wire_obj
+    ok_w, info = False, {}
+    if wo is not None and wo.type == 'CURVE':
+        from mathutils.bvhtree import BVHTree
+        dg = bpy.context.evaluated_depsgraph_get()
+        me = ob.evaluated_get(dg).to_mesh()
+        tree = BVHTree.FromPolygons([v.co.copy() for v in me.vertices], [list(pl.vertices) for pl in me.polygons])
+        ob.evaluated_get(dg).to_mesh_clear()
+        sample = [Vector(pt.co[:3]) for s in wo.data.splines for pt in s.points][::7][:400]
+        dists = [tree.find_nearest(c)[3] for c in sample]
+        npts = sum(len(s.points) for s in wo.data.splines)
+        info = dict(splines=len(wo.data.splines), points=npts,
+                    max_gap=round(max(dists), 5) if dists else None, radius=p.wire_radius)
+        ok_w = len(wo.data.splines) > 10 and npts > 200 and dists and max(dists) < 4 * p.wire_radius + 0.002
+    record("wire mesh lies on the pleats", ok_w, **info)
+    # pull tab sticks out of one long side
+    lo, hi = bounds([fr])
+    reach = max(hi.x - w / 2, -w / 2 - lo.x)
+    record("pull tab sticks out of the frame", reach > 0.5 * p.tab_length, reach=round(reach, 4),
+           tab_length=p.tab_length)
+    # printed graphics with the nominal size label
+    po = p.print_obj
+    rb = bmesh.new()
+    fm.build_reference(rb, p, json.loads(p.src))
+    _W, O, F, B, _fit = fm._border_dims(p, fm._rb_small(rb))
+    label = fm._auto_size_label(fm._outline_frames(rb, 1e-4), O, F + B + p.board_thickness)
+    rb.free()
+    nf = len(po.data.polygons) if po else 0
+    record("printed label, airflow text and arrow", po is not None and nf > 40 and label == "16 x 25 x 1",
+           faces=nf, label=label)
+    render_material("12_diecut_furnace", [ob, fr] + [o for o in (wo, po) if o])
+    render("12_diecut_closeup", [ob, fr] + [o for o in (wo, po) if o], direction=(0.5, -1.4, 0.35), close=0.35)
+    render("12_diecut_side_print", [ob, fr] + [o for o in (po,) if o], direction=(1.6, -0.25, 0.1), close=0.55)
+    # every other face option and shape
+    bad = {}
+    for shape, pattern, side in (('CARTRIDGE', 'SQUARE', 'FRONT'), ('BOX', 'DIAMOND', 'BOTH'),
+                                 ('ROUND', 'DIAMOND', 'FRONT'), ('PANEL', 'SQUARE', 'BACK')):
+        clear_scene()
+        bpy.ops.filter.add_shape(shape=shape)
+        o2 = bpy.context.active_object
+        q = o2.filter_maker
+        n0 = len(q.border_obj.data.polygons) if q.border_obj else 0
+        q.grille_side = side
+        q.grille_pattern = pattern
+        q.pull_tabs = 2 if shape == 'PANEL' else 0
+        n1 = len(q.border_obj.data.polygons) if q.border_obj else 0
+        if q.last_error or n1 <= n0:
+            bad[shape] = dict(error=q.last_error, before=n0, after=n1)
+        if shape in ('CARTRIDGE', 'BOX'):
+            render("12_face_%s" % shape.lower(), [o2, q.border_obj], direction=(1.0, -1.3, 0.8))
+    record("die-cut face on cartridge, box wrap, round and back side", not bad, failed=bad)
+    # wire on a curve filter
+    clear_scene()
+    bpy.ops.filter.new_line()
+    o3 = bpy.context.active_object
+    o3.filter_maker.use_wire = True
+    w3 = o3.filter_maker.wire_obj
+    record("wire mesh on a curve filter", w3 is not None and len(w3.data.splines) > 5 and not o3.filter_maker.last_error,
+           splines=len(w3.data.splines) if w3 else 0, error=o3.filter_maker.last_error)
+    o3.filter_maker.use_wire = False
+    record("wire mesh removed when switched off", o3.filter_maker.wire_obj is None
+           and not any(c.name.endswith("_Wire") for c in o3.children))
+
+
 def t_game_ready():
     clear_scene()
     src = make_mesh("RefGame", [(0, 0, 0), (0.6, 0, 0), (0.6, 0, 0.4), (0, 0, 0.4)], [(0, 1, 2, 3)])
@@ -894,7 +1048,7 @@ for name, fn in (("new line", t_new_line), ("plane", t_plane), ("L fold", t_lfol
                  ("box wrap", t_box_wrap), ("full featured", t_full_featured),
                  ("presets", t_presets), ("icons", t_icons), ("shared library", t_shared_library),
                  ("border coverage", t_border_covers_pleats), ("uvs", t_uvs), ("materials", t_materials),
-                 ("shapes", t_shapes), ("caps", t_caps), ("game ready", t_game_ready)):
+                 ("shapes", t_shapes), ("caps", t_caps), ("die-cut", t_diecut), ("game ready", t_game_ready)):
     run(name, fn)
 
 # ---------------------------------------------------------------------------
