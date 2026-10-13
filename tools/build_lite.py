@@ -4,7 +4,7 @@
 
 Lite keeps: every source (new line, curve, edges, faces), pleat shaping, bevel,
 shading, topology and a flat border (width only). Pro-only code is replaced by
-small stubs, so it is not in the Lite file at all:
+small stubs, so it is not in the Lite file at all (and Lite never advertises Pro):
   wear (Clouds displace), hair & dust, border profiles / overhang / front-back,
   boolean cutter and presets.
 Lite uses the same scene data as Pro, so a file made with Lite opens in Pro with
@@ -19,7 +19,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "__init__.py")
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "dist", "FilterMakerLite")
-PRO_URL = "https://github.com/Tooboi/FilterMakerPro"     # change to the store page when Pro is on sale
+# Lite has no upgrade prompts in Blender's UI: the Blender Extensions platform does not allow
+# promoting commercial versions inside the add-on (Terms of Service, section 6).
 
 src = open(SRC, encoding="utf-8").read()
 
@@ -36,13 +37,12 @@ def rep(old, new, count=1):
 rep('"name": "Filter Maker Pro",', '"name": "Filter Maker Lite",')
 src = re.sub(r'"description": "[^"]*",',
              '"description": "Free pleated filter generator: line, curve, edge and face sources, '
-             'pleat shaping and a simple border. Filter Maker Pro adds wear, hair & dust, border '
-             'styles, boolean and presets.",', src, count=1)
+             'pleat shaping, pleat bevel and a clean border.",', src, count=1)
 rep('EDITION = "PRO" ', 'EDITION = "LITE"')
 src = re.sub(r'bl_label = "Filter Maker Pro  ([0-9.]+)"', r'bl_label = "Filter Maker Lite  \1"', src, count=1)
 
 # ---- replace Pro-only functions with stubs ----------------------------------
-PRO_ONLY = "This is a Filter Maker Pro feature."
+PRO_ONLY = "Not available in Filter Maker Lite."
 STUBS = {
     "apply_noise": "return",
     "update_particles": ("_remove_child(p, \"particles_obj\")\n"
@@ -129,38 +129,10 @@ rep('''        layout.prop(p, "border_profile", expand=True)
         c.prop(p, "border_back")
         c.separator()''', '''        c = layout.column(align=True)
         c.prop(p, "border_width", text="Width")
-        c.label(text="Chamfer, Round and Lip profiles, overhang and front / back: Pro", icon=ic('LOCKED'))
         c.separator()''')
 
-UPSELL = '''
+UPSELL = ''
 
-PRO_URL = %r
-
-
-class FILTER_PT_pro(FILTER_SubPanel, Panel):
-    header_art = "finish"
-    header_icon = "FUND"
-    bl_label = "Filter Maker Pro"
-    bl_idname = "FILTER_PT_pro"
-    bl_options = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return True
-
-    @safe_draw
-    def draw(self, context):
-        layout = self.layout
-        col = layout.column(align=True)
-        for text, icon in (("Wear (Clouds displace)", 'MOD_DISPLACE'),
-                           ("Hair & dust, shared across filters", 'STRANDS'),
-                           ("Border profiles, overhang, front / back", 'MOD_SOLIDIFY'),
-                           ("Boolean cutter", 'MOD_BOOLEAN'),
-                           ("Presets: built-in and your own", 'PRESET')):
-            col.label(text=text, icon=ic(icon))
-        layout.operator("wm.url_open", text="Get Filter Maker Pro", icon=ic('URL')).url = PRO_URL
-        layout.label(text="Filters made in Lite open in Pro unchanged.", icon=ic('INFO'))
-''' % PRO_URL
 rep('''
 
 def _teardown():''', UPSELL + '''
@@ -176,7 +148,7 @@ drop = {"FILTER_PT_presets", "FILTER_PT_wear", "FILTER_PT_hair", "FILTER_PT_dust
 unknown = drop - set(names)
 if unknown:
     raise SystemExit("build_lite: classes not found: %s" % ", ".join(sorted(unknown)))
-keep = [n for n in names if n not in drop] + ["FILTER_PT_pro"]
+keep = [n for n in names if n not in drop]
 src = src[:m.start()] + "classes = (" + ", ".join(keep) + ")\n" + src[m.end():]
 # the upsell panel is defined after `classes`; move the tuple below it
 m = re.search(r"classes = \(.*?\)\n", src, re.S)
@@ -204,7 +176,7 @@ name = "Filter Maker Lite"
 tagline = "Free pleated filter generator for lines, curves and faces"
 maintainer = "Tooboi"
 type = "add-on"
-website = "https://github.com/Tooboi/FilterMakerPro"
+website = "https://github.com/Tooboi/FilterMakerLite"
 
 tags = ["Modeling", "Mesh", "Object"]
 
