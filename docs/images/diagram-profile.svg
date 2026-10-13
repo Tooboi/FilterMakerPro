@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="300" viewBox="0 0 960 300" role="img" aria-label="Pleat profile: sharp, bevelled and round folds">
+<title>Pleat profile: sharp, bevelled and round folds</title>
+<rect x="0.5" y="0.5" width="959" height="299" rx="18" fill="#0d1117" stroke="#30363d"/>
+<g font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif">
+<text x="40" y="44" fill="#e6edf3" font-size="18" font-weight="600">Pleat profile</text>
+<text x="40" y="68" fill="#8b949e" font-size="14">Ridge / Valley Bevel round the folds; Bevel Cuts set how many edge loops follow the curve (orange).</text>
+<rect x="46" y="88" width="281.33" height="176" rx="12" fill="#161b22" stroke="#30363d"/>
+<line x1="70" y1="160" x2="291.33" y2="160" stroke="#858799" stroke-dasharray="4 4"/>
+<polyline points="70,194 125.33,126 180.67,194 236,126 291.33,194" fill="none" stroke="#858799" stroke-width="1.4" opacity="0.7"/>
+<polyline points="70,194 125.33,126 180.67,194 236,126 291.33,194 291.33,194" fill="none" stroke="#edf2ff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="125.33" cy="126" r="3.2" fill="#ff8c1f"/>
+<circle cx="180.67" cy="194" r="3.2" fill="#ff8c1f"/>
+<circle cx="236" cy="126" r="3.2" fill="#ff8c1f"/>
+<circle cx="291.33" cy="194" r="3.2" fill="#ff8c1f"/>
+<text x="186.67" y="232" fill="#e6edf3" font-size="16" font-weight="600" text-anchor="middle">Sharp</text>
+<text x="186.67" y="252" fill="#8b949e" font-size="13" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">Bevel 0  ·  1 cut</text>
+<rect x="339.33" y="88" width="281.33" height="176" rx="12" fill="#161b22" stroke="#30363d"/>
+<line x1="363.33" y1="160" x2="584.67" y2="160" stroke="#858799" stroke-dasharray="4 4"/>
+<polyline points="363.33,194 418.67,126 474,194 529.33,126 584.67,194" fill="none" stroke="#858799" stroke-width="1.4" opacity="0.7"/>
+<polyline points="363.33,186.44 367.02,186.44 374.4,180.4 407.6,139.6 414.98,133.56 422.36,133.56 429.73,139.6 462.93,180.4 470.31,186.44 477.69,186.44 485.07,180.4 518.27,139.6 525.64,133.56 533.02,133.56 540.4,139.6 573.6,180.4 580.98,186.44 584.67,186.44" fill="none" stroke="#edf2ff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="367.02" cy="186.44" r="3.2" fill="#ff8c1f"/>
+<circle cx="374.4" cy="180.4" r="3.2" fill="#ff8c1f"/>
+<circle cx="407.6" cy="139.6" r="3.2" fill="#ff8c1f"/>
+<circle cx="414.98" cy="133.56" r="3.2" fill="#ff8c1f"/>
+<circle cx="422.36" cy="133.56" r="3.2" fill="#ff8c1f"/>
+<circle cx="429.73" cy="139.6" r="3.2" fill="#ff8c1f"/>
+<circle cx="462.93" cy="180.4" r="3.2" fill="#ff8c1f"/>
+<circle cx="470.31" cy="186.44" r="3.2" fill="#ff8c1f"/>
+<circle cx="477.69" cy="186.44" r="3.2" fill="#ff8c1f"/>
+<circle cx="485.07" cy="180.4" r="3.2" fill="#ff8c1f"/>
+<circle cx="518.27" cy="139.6" r="3.2" fill="#ff8c1f"/>
+<circle cx="525.64" cy="133.56" r="3.2" fill="#ff8c1f"/>
+<circle cx="533.02" cy="133.56" r="3.2" fill="#ff8c1f"/>
+<circle cx="540.4" cy="139.6" r="3.2" fill="#ff8c1f"/>
+<circle cx="573.6" cy="180.4" r="3.2" fill="#ff8c1f"/>
+<circle cx="580.98" cy="186.44" r="3.2" fill="#ff8c1f"/>
+<text x="480" y="232" fill="#e6edf3" font-size="16" font-weight="600" text-anchor="middle">Bevelled</text>
+<text x="480" y="252" fill="#8b949e" font-size="13" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">Bevel 0.4  ·  3 cuts</text>
+<rect x="632.67" y="88" width="281.33" height="176" rx="12" fill="#161b22" stroke="#30363d"/>
+<line x1="656.67" y1="160" x2="878" y2="160" stroke="#858799" stroke-dasharray="4 4"/>
+<polyline points="656.67,194 712,126 767.33,194 822.67,126 878,194" fill="none" stroke="#858799" stroke-width="1.4" opacity="0.7"/>
+<polyline points="656.67,178.7 664.97,177 673.27,171.9 681.57,163.4 687.1,156.6 695.4,148.1 703.7,143 712,141.3 720.3,143 728.6,148.1 736.9,156.6 742.43,163.4 750.73,171.9 759.03,177 767.33,178.7 775.63,177 783.93,171.9 792.23,163.4 797.77,156.6 806.07,148.1 814.37,143 822.67,141.3 830.97,143 839.27,148.1 847.57,156.6 853.1,163.4 861.4,171.9 869.7,177 878,178.7 878,178.7" fill="none" stroke="#edf2ff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="664.97" cy="177" r="3.2" fill="#ff8c1f"/>
+<circle cx="673.27" cy="171.9" r="3.2" fill="#ff8c1f"/>
+<circle cx="681.57" cy="163.4" r="3.2" fill="#ff8c1f"/>
+<circle cx="687.1" cy="156.6" r="3.2" fill="#ff8c1f"/>
+<circle cx="695.4" cy="148.1" r="3.2" fill="#ff8c1f"/>
+<circle cx="703.7" cy="143" r="3.2" fill="#ff8c1f"/>
+<circle cx="712" cy="141.3" r="3.2" fill="#ff8c1f"/>
+<circle cx="720.3" cy="143" r="3.2" fill="#ff8c1f"/>
+<circle cx="728.6" cy="148.1" r="3.2" fill="#ff8c1f"/>
+<circle cx="736.9" cy="156.6" r="3.2" fill="#ff8c1f"/>
+<circle cx="742.43" cy="163.4" r="3.2" fill="#ff8c1f"/>
+<circle cx="750.73" cy="171.9" r="3.2" fill="#ff8c1f"/>
+<circle cx="759.03" cy="177" r="3.2" fill="#ff8c1f"/>
+<circle cx="767.33" cy="178.7" r="3.2" fill="#ff8c1f"/>
+<circle cx="775.63" cy="177" r="3.2" fill="#ff8c1f"/>
+<circle cx="783.93" cy="171.9" r="3.2" fill="#ff8c1f"/>
+<circle cx="792.23" cy="163.4" r="3.2" fill="#ff8c1f"/>
+<circle cx="797.77" cy="156.6" r="3.2" fill="#ff8c1f"/>
+<circle cx="806.07" cy="148.1" r="3.2" fill="#ff8c1f"/>
+<circle cx="814.37" cy="143" r="3.2" fill="#ff8c1f"/>
+<circle cx="822.67" cy="141.3" r="3.2" fill="#ff8c1f"/>
+<circle cx="830.97" cy="143" r="3.2" fill="#ff8c1f"/>
+<circle cx="839.27" cy="148.1" r="3.2" fill="#ff8c1f"/>
+<circle cx="847.57" cy="156.6" r="3.2" fill="#ff8c1f"/>
+<circle cx="853.1" cy="163.4" r="3.2" fill="#ff8c1f"/>
+<circle cx="861.4" cy="171.9" r="3.2" fill="#ff8c1f"/>
+<circle cx="869.7" cy="177" r="3.2" fill="#ff8c1f"/>
+<circle cx="878" cy="178.7" r="3.2" fill="#ff8c1f"/>
+<text x="773.33" y="232" fill="#e6edf3" font-size="16" font-weight="600" text-anchor="middle">Round</text>
+<text x="773.33" y="252" fill="#8b949e" font-size="13" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">Bevel 0.9  ·  6 cuts</text>
+</g>
+</svg>

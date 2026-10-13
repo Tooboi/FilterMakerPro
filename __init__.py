@@ -2,7 +2,7 @@ bl_info = {
     "name": "Filter Maker Pro",
     "author": "Tooboi",
     "version": (0, 6, 5),
-    "blender": (3, 6, 0),
+    "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Filter Maker",
     "description": "Pleated filter generator with instanced hair/dust particle systems, borders and presets.",
     "category": "Object",

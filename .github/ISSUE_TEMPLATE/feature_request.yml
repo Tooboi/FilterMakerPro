@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest an idea or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to make?
+      description: The filter or situation you have in mind. Reference images are great.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed solution
+      description: How you imagine it working in the panel.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you use today

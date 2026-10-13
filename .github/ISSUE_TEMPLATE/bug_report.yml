@@ -1,0 +1,54 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting! A small .blend file that shows the problem helps the most.
+  - type: input
+    id: blender
+    attributes:
+      label: Blender version
+      placeholder: "5.2.0 LTS"
+    validations:
+      required: true
+  - type: input
+    id: addon
+    attributes:
+      label: Filter Maker Pro version
+      description: Shown in the panel header.
+      placeholder: "0.6.5"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source type
+      options: [New Filter Line, Curve, Mesh edges, Faces, Not specific to a source]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Error message / console output
+      description: "Window → Toggle System Console (Windows), or the terminal you launched Blender from."
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or .blend
+      description: Drag files here.
