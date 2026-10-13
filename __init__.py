@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Filter Maker Pro",
     "author": "Tooboi",
-    "version": (0, 6, 4),
+    "version": (0, 6, 5),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar (N) > Filter Maker",
     "description": "Pleated filter generator with instanced hair/dust particle systems, borders and presets.",
@@ -2299,14 +2299,26 @@ def _find_layer_coll(lc, coll):
     return None
 
 
+LIB_COLOR = 'COLOR_08'                             # brown in the Outliner
+
+
 def _library_root():
     scene = bpy.context.scene
     root = bpy.data.collections.get(LIB_ROOT)
     if root is None:
         root = bpy.data.collections.new(LIB_ROOT)
-    if root.name not in scene.collection.children:
+    _setp(root, "color_tag", LIB_COLOR)
+    kids = scene.collection.children
+    if root.name not in kids:
         try:
-            scene.collection.children.link(root)
+            kids.link(root)
+        except Exception:
+            pass
+    elif len(kids) and kids[len(kids) - 1] != root:
+        # keep the library as the last entry of the Scene Collection
+        try:
+            kids.unlink(root)
+            kids.link(root)
         except Exception:
             pass
     # Excluded from every view layer: the pieces are only seen through the particles.
@@ -2334,6 +2346,7 @@ def _ensure_lib(obj, p, attr, label):
         coll = bpy.data.collections.new("%s %s" % (obj.name, label))
         setattr(p, attr, coll)
     root = _library_root()
+    _setp(coll, "color_tag", LIB_COLOR)
     if coll.name not in root.children:
         try:
             root.children.link(coll)
@@ -2598,14 +2611,15 @@ def _remove_psys(emitter, name):
 # (which Blender 5.x no longer accepts from Python as item assignment).
 # ---------------------------------------------------------------------------
 
-SCATTER_VERSION = 6
+SCATTER_VERSION = 7
 SCATTER_MOD = "Filter Maker Scatter"
 SCATTER_PREFIX = "FilterMaker Scatter "
 DUST_SEED_OFFSET = 7919                    # hair and dust never share spawn points
 
 SCATTER_VALUES = (
     # name, kind, default
-    ("Viewport Amount", 'FLOAT', 1.0),
+    ("Hair Viewport", 'FLOAT', 1.0),
+    ("Dust Viewport", 'FLOAT', 1.0),
     ("Side", 'FLOAT', 1.0),
     ("Hair Density", 'FLOAT', 0.0),
     ("Hair Size", 'FLOAT', 0.02),
@@ -2619,7 +2633,8 @@ SCATTER_VALUES = (
     ("Dust Seed", 'INT', 0),
     ("Hair Pad", 'FLOAT', 0.0),
     ("Dust Pad", 'FLOAT', 0.0),
-    ("Falloff", 'FLOAT', 0.05),
+    ("Hair Falloff", 'FLOAT', 0.05),
+    ("Dust Falloff", 'FLOAT', 0.05),
 )
 
 
@@ -2708,17 +2723,18 @@ def _build_scatter(group, ctx):
     gout = N('NodeGroupOutput', 1900, 0)
     geo_in = _ng_sock(gin.outputs, "Geometry")
 
-    # Viewport thinning: factor = 1 - is_viewport * (1 - amount)
+    # Viewport thinning: factor = 1 - is_viewport * (1 - amount), separately per kind
     isvp = N('GeometryNodeIsViewport', -1400, 500)
-    vp_factor = math_node('SUBTRACT', -1100, 500, 1.0,
-                          math_node('MULTIPLY', -1250, 500, isvp.outputs[0],
-                                    math_node('SUBTRACT', -1400, 400, 1.0, val["Viewport Amount"])))
+
+    def vp_factor(kind, y):
+        return math_node('SUBTRACT', -1100, y, 1.0,
+                         math_node('MULTIPLY', -1250, y, isvp.outputs[0],
+                                   math_node('SUBTRACT', -1400, y - 100, 1.0, val[kind + " Viewport"])))
     mask = N('GeometryNodeInputNamedAttribute', -1400, 250, data_type='FLOAT')
     _ng_sock(mask.inputs, "Name").default_value = DIST_ATTR
     border_dist = _ng_sock(mask.outputs, "Attribute", F)
-    falloff = math_node('MAXIMUM', -1250, 150, val["Falloff"], 1e-6)
-
-    def border_factor(x, y, pad):
+    def border_factor(x, y, pad, falloff_val):
+        falloff = math_node('MAXIMUM', x - 320, y - 120, falloff_val, 1e-6)
         """0 under / right next to the border, smooth ramp to 1 over the falloff."""
         node = N('ShaderNodeMapRange', x, y, data_type='FLOAT', interpolation_type='SMOOTHSTEP')
         try:
@@ -2782,13 +2798,13 @@ def _build_scatter(group, ctx):
         except Exception:
             pass
         L(geo_in, _ng_sock(dist.inputs, "Mesh"))
-        L(math_node('MULTIPLY', -1000, y - 60, val[kind + " Density"], vp_factor),
+        L(math_node('MULTIPLY', -1000, y - 60, val[kind + " Density"], vp_factor(kind, y + 600)),
           _ng_sock(dist.inputs, "Density", F))
         L(dseed, _ng_sock(dist.inputs, "Seed", INT))
         # Border falloff per point: the distance attribute is carried onto every
         # scattered point; keep it with probability = falloff factor (exact at the
         # edge, unlike a density factor blended across faces that straddle it).
-        keep = border_factor(-650, y + 260, val[kind + " Pad"])
+        keep = border_factor(-650, y + 260, val[kind + " Pad"], val[kind + " Falloff"])
         cull = math_node('GREATER_THAN', -450, y + 260,
                          random_value('FLOAT', -650, y + 420, 0.0, 1.0, seed, 7), keep)
         delete = N('GeometryNodeDeleteGeometry', -250, y + 120)
@@ -2894,7 +2910,8 @@ def sync_scatter(emitter, p, hair_coll, dust_coll):
     if mod.node_group != group:
         mod.node_group = group
     values = {
-        "Viewport Amount": max(0.01, min(1.0, p.particle_viewport / 100.0)),
+        "Hair Viewport": max(0.01, min(1.0, p.hair_viewport / 100.0)),
+        "Dust Viewport": max(0.01, min(1.0, p.dust_viewport / 100.0)),
         "Side": SIDE_VALUE.get(p.particle_side, 1.0),
         "Hair Density": float(p.hair_density) if (p.use_hair and hair_coll is not None) else 0.0,
         "Hair Size": float(max(p.hair_length, 1e-6)),
@@ -2909,7 +2926,8 @@ def sync_scatter(emitter, p, hair_coll, dust_coll):
         # keep a gap of one full piece so nothing reaches into the frame
         "Hair Pad": float(p.hair_length * (1.0 + p.hair_length_var)),
         "Dust Pad": float(p.dust_size * (1.0 + p.dust_size_var) * 0.6),
-        "Falloff": float(max(0.0, p.particle_border_falloff)),
+        "Hair Falloff": float(max(0.0, p.hair_border_falloff)),
+        "Dust Falloff": float(max(0.0, p.dust_border_falloff)),
     }
     nodes = group.nodes
     for name, value in values.items():
@@ -3412,7 +3430,7 @@ class FilterProps(PropertyGroup):
     border_bevel: _len("Bevel Size", 0.01, "Chamfer / round radius, or lip step height")
     border_cuts: IntProperty(name="Round Cuts", default=3, min=1, max=12, update=_upd)
     border_fit: BoolProperty(name="Fit To Pleats", default=True, update=_upd)
-    border_smooth: BoolProperty(name="Shade Smooth", default=True, update=_upd,
+    border_smooth: BoolProperty(name="Shade Smooth", default=False, update=_upd,
                                 description="Enable smooth shading on the border frame")
     border_auto_smooth: BoolProperty(name="Auto Smooth", default=True, update=_upd,
                                      description="Keep frame edges sharp when their angle exceeds the threshold")
@@ -3455,13 +3473,18 @@ class FilterProps(PropertyGroup):
                                description="Number of different dust pieces generated for the dust collection")
 
     # Shared particle emitter
-    particle_border_falloff: _len("Border Falloff", 0.05, "Distance over which hair and dust fade in "
-                                  "after the gap next to the border", upd=_upd_scatter)
+    hair_border_falloff: _len("Border Falloff", 0.05, "Distance over which hair fades in after the "
+                              "gap next to the border", upd=_upd_scatter)
+    dust_border_falloff: _len("Border Falloff", 0.05, "Distance over which dust fades in after the "
+                              "gap next to the border", upd=_upd_scatter)
     particles_avoid_border: BoolProperty(name="Avoid Border", default=True, update=_upd,
                                          description="No hair or dust where the border frame covers the filter")
-    particle_viewport: IntProperty(name="Viewport Display", default=100, min=1, max=100,
-                                   subtype='PERCENTAGE', update=_upd_scatter,
-                                   description="Share of the hair / dust drawn in the viewport (renders use all)")
+    hair_viewport: IntProperty(name="Viewport Display", default=100, min=1, max=100,
+                               subtype='PERCENTAGE', update=_upd_scatter,
+                               description="Share of the hair drawn in the viewport (renders use all)")
+    dust_viewport: IntProperty(name="Viewport Display", default=100, min=1, max=100,
+                               subtype='PERCENTAGE', update=_upd_scatter,
+                               description="Share of the dust drawn in the viewport (renders use all)")
     particle_side: EnumProperty(name="Side", items=[
         ('FRONT', "Front", "Hair and dust on the front of the filter"),
         ('BACK', "Back", "Hair and dust on the back of the filter"),
@@ -3509,7 +3532,7 @@ class FilterProps(PropertyGroup):
 PRESET_SUBDIR = "filter_maker_pro"
 LEN_PROPS = {"thickness", "pleat_depth", "height", "noise_strength", "noise_scale", "border_width",
              "border_overhang", "border_bevel", "border_front", "border_back", "hair_length",
-             "hair_width", "dust_size", "cutter_margin", "particle_border_falloff"}
+             "hair_width", "dust_size", "cutter_margin", "hair_border_falloff", "dust_border_falloff"}
 INV_LEN = {"pleat_density", "detail"}
 INV_AREA = {"hair_density", "dust_density"}
 VEC_PROPS = {"height_dir"}
@@ -3523,7 +3546,7 @@ DEFAULTS_NORM = {
     "noise_basis": "BLENDER", "noise_direction": "XYZ", "noise_seed": 0,
     "use_border": False, "border_width": 0.03, "border_overhang": 0.0, "border_profile": "FLAT",
     "border_bevel": 0.01, "border_cuts": 3, "border_fit": True,
-    "border_smooth": True, "border_auto_smooth": True,
+    "border_smooth": False, "border_auto_smooth": True,
     "border_auto_smooth_angle": math.radians(35),
     "border_front": 0.01, "border_back": 0.01,
     "use_hair": False, "hair_density": 2000.0, "hair_length": 0.02, "hair_width": 0.0005,
@@ -3531,7 +3554,8 @@ DEFAULTS_NORM = {
     "use_dust": False, "dust_density": 3000.0, "dust_size": 0.004, "dust_size_var": 0.6, "dust_seed": 0,
     "hair_variants": 8, "dust_variants": 10, "dust_tilt": 0.8, "hair_lift": math.radians(12.0),
     "dust_types": ["CLUMP", "FLAKE", "GRIT", "LINT"], "particles_avoid_border": True,
-    "particle_viewport": 100, "particle_side": "FRONT", "particle_border_falloff": 0.05,
+    "hair_viewport": 100, "dust_viewport": 100, "particle_side": "FRONT",
+    "hair_border_falloff": 0.05, "dust_border_falloff": 0.05,
     "use_boolean": False, "boolean_source": "ENVELOPE", "boolean_op": "DIFFERENCE", "boolean_solver": "EXACT",
     "cutter_margin": 0.0,
 }
@@ -4138,7 +4162,7 @@ def _counts(ob):
 
 
 class FILTER_PT_main(Panel):
-    bl_label = "Filter Maker Pro  0.6.4"
+    bl_label = "Filter Maker Pro  0.6.5"
     bl_idname = "FILTER_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -4396,7 +4420,7 @@ class FILTER_PT_hair(FILTER_SubPanel, Panel):
         for prop in ("hair_density", "hair_length", "hair_length_var", "hair_width", "hair_curl",
                      "hair_lift", "hair_variants", "hair_seed"):
             c.prop(p, prop)
-        _particle_footer(self.layout, p, p.hair_lib, p.hair_count, "strands")
+        _particle_footer(self.layout, p, p.hair_lib, p.hair_count, "strands", "hair")
 
 
 class FILTER_PT_dust(FILTER_SubPanel, Panel):
@@ -4424,7 +4448,7 @@ class FILTER_PT_dust(FILTER_SubPanel, Panel):
             c.prop(p, prop)
         row = self.layout.row(align=True)
         row.prop(p, "dust_types", expand=True)
-        _particle_footer(self.layout, p, p.dust_lib, p.dust_count, "pieces")
+        _particle_footer(self.layout, p, p.dust_lib, p.dust_count, "pieces", "dust")
 
 
 class FILTER_PT_boolean(FILTER_SubPanel, Panel):
@@ -4907,7 +4931,7 @@ def _header_icon(layout, name, fallback):
         layout.label(text="", icon=ic(fallback))
 
 
-def _particle_footer(layout, p, coll, count, noun):
+def _particle_footer(layout, p, coll, count, noun, kind):
     box = layout.box()
     col = box.column(align=True)
     col.label(text="~%s %s, instanced with Geometry Nodes" % (format(count, ","), noun), icon=ic('GEOMETRY_NODES'))
@@ -4918,8 +4942,8 @@ def _particle_footer(layout, p, coll, count, noun):
     col.prop(p, "particles_avoid_border")
     sub = col.row(align=True)
     sub.active = p.use_border and p.particles_avoid_border
-    sub.prop(p, "particle_border_falloff")
-    col.prop(p, "particle_viewport", slider=True)
+    sub.prop(p, kind + "_border_falloff")
+    col.prop(p, kind + "_viewport", slider=True)
     if p.particles_obj is not None:
         col.label(text="On: %s  (modifier: %s)" % (p.particles_obj.name, SCATTER_MOD), icon=ic('MODIFIER'))
 
