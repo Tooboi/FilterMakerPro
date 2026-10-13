@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-label="Border cross-section with width, overhang, front and back extend">
+<title>Border cross-section with width, overhang, front and back extend</title>
+<rect x="0.5" y="0.5" width="959" height="359" rx="18" fill="#0d1117" stroke="#30363d"/>
+<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1L9 5L0 9z" fill="#8b949e"/></marker><pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="7" stroke="#ff8c1f" stroke-opacity="0.35" stroke-width="2"/></pattern></defs>
+<g font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif">
+<text x="40" y="44" fill="#e6edf3" font-size="18" font-weight="600">Border cross-section</text>
+<text x="40" y="68" fill="#8b949e" font-size="14">The frame is swept along the outline; pleat ends are sealed inside it, so nothing clips through.</text>
+<line x1="190" y1="111" x2="190" y2="295" stroke="#858799" stroke-dasharray="5 4"/>
+<line x1="770" y1="111" x2="770" y2="295" stroke="#858799" stroke-dasharray="5 4"/>
+<polyline points="198,247 223.64,163 249.27,247 274.91,163 300.55,247 326.18,163 351.82,247 377.45,163 403.09,247 428.73,163 454.36,247 480,163 505.64,247 531.27,163 556.91,247 582.55,163 608.18,247 633.82,163 659.45,247 685.09,163 710.73,247 736.36,163 762,247" fill="none" stroke="#edf2ff" stroke-width="3" stroke-linejoin="round"/>
+<rect x="164" y="145" width="96" height="120" rx="7" fill="url(#hatch)" stroke="#ff8c1f" stroke-width="2.4"/>
+<rect x="700" y="145" width="96" height="120" rx="7" fill="url(#hatch)" stroke="#ff8c1f" stroke-width="2.4"/>
+<line x1="164" y1="129" x2="190" y2="129" stroke="#8b949e" stroke-width="1.3" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<text x="165.0" y="119" fill="#e6edf3" font-size="13" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">Overhang</text>
+<line x1="190" y1="129" x2="260" y2="129" stroke="#8b949e" stroke-width="1.3" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<text x="233.0" y="119" fill="#e6edf3" font-size="13" text-anchor="middle" font-family="ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">Width</text>
+<line x1="814" y1="163" x2="814" y2="247" stroke="#8b949e" stroke-width="1.3" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<text x="824" y="209" fill="#e6edf3" font-size="13" text-anchor="start" font-family="ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">Pleat depth x2</text>
+<line x1="814" y1="145" x2="814" y2="163" stroke="#8b949e" stroke-width="1.3" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<text x="824" y="158.0" fill="#e6edf3" font-size="13" text-anchor="start" font-family="ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">Front</text>
+<line x1="814" y1="247" x2="814" y2="265" stroke="#8b949e" stroke-width="1.3" marker-start="url(#ar)" marker-end="url(#ar)"/>
+<text x="824" y="264.0" fill="#e6edf3" font-size="13" text-anchor="start" font-family="ui-monospace, 'SFMono-Regular', Consolas, 'Liberation Mono', monospace">Back</text>
+<text x="190" y="311" fill="#858799" font-size="12" text-anchor="middle">reference edge</text>
+<line x1="40" y1="330" x2="62" y2="330" stroke="#edf2ff" stroke-width="3"/>
+<text x="70" y="334" fill="#8b949e" font-size="13">pleated sheet</text>
+<line x1="210" y1="330" x2="232" y2="330" stroke="#ff8c1f" stroke-width="3"/>
+<text x="240" y="334" fill="#8b949e" font-size="13">border frame</text>
+<line x1="380" y1="330" x2="402" y2="330" stroke="#858799" stroke-dasharray="5 4" stroke-width="1.5"/>
+<text x="410" y="334" fill="#8b949e" font-size="13">source outline</text>
+</g>
+</svg>

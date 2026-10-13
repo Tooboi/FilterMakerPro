@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="250" viewBox="0 0 960 250" role="img" aria-label="Workflow: pick a source, shape it live, finish">
+<title>Workflow: pick a source, shape it live, finish</title>
+<rect x="0.5" y="0.5" width="959" height="249" rx="18" fill="#0d1117" stroke="#30363d"/>
+<defs><marker id="aw" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#ff8c1f"/></marker></defs>
+<g font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif">
+<rect x="54" y="40" width="252" height="170" rx="14" fill="#161b22" stroke="#30363d"/>
+<path d="M78 96 c30 -40 60 40 90 0 s 50 -30 60 10" fill="none" stroke="#edf2ff" stroke-width="2.4" stroke-linecap="round"/>
+<circle cx="78" cy="96" r="3.2" fill="#ff8c1f"/>
+<circle cx="228" cy="96" r="3.2" fill="#ff8c1f"/>
+<rect x="240" y="78" width="44" height="34" rx="3" fill="none" stroke="#858799" stroke-width="2"/>
+<circle cx="88" cy="152" r="13" fill="#ff8c1f"/>
+<text x="88" y="157" fill="#0d1117" font-size="14" font-weight="700" text-anchor="middle">1</text>
+<text x="110" y="158" fill="#e6edf3" font-size="18" font-weight="600">Pick a source</text>
+<text x="78" y="186" fill="#8b949e" font-size="13.5">Line · curve · edges · faces</text>
+<line x1="314" y1="125" x2="344" y2="125" stroke="#ff8c1f" stroke-width="2.4" marker-end="url(#aw)"/>
+<rect x="354" y="40" width="252" height="170" rx="14" fill="#161b22" stroke="#30363d"/>
+<line x1="378" y1="76" x2="578" y2="76" stroke="#30363d" stroke-width="5" stroke-linecap="round"/>
+<line x1="378" y1="76" x2="508" y2="76" stroke="#ff8c1f" stroke-width="5" stroke-linecap="round"/>
+<line x1="378" y1="96" x2="578" y2="96" stroke="#30363d" stroke-width="5" stroke-linecap="round"/>
+<line x1="378" y1="96" x2="448" y2="96" stroke="#edf2ff" stroke-width="5" stroke-linecap="round"/>
+<line x1="378" y1="116" x2="578" y2="116" stroke="#30363d" stroke-width="5" stroke-linecap="round"/>
+<line x1="378" y1="116" x2="538" y2="116" stroke="#edf2ff" stroke-width="5" stroke-linecap="round"/>
+<circle cx="388" cy="152" r="13" fill="#ff8c1f"/>
+<text x="388" y="157" fill="#0d1117" font-size="14" font-weight="700" text-anchor="middle">2</text>
+<text x="410" y="158" fill="#e6edf3" font-size="18" font-weight="600">Shape it live</text>
+<text x="378" y="186" fill="#8b949e" font-size="13.5">Pleats · border · wear · hair &amp; dust</text>
+<line x1="614" y1="125" x2="644" y2="125" stroke="#ff8c1f" stroke-width="2.4" marker-end="url(#aw)"/>
+<rect x="654" y="40" width="252" height="170" rx="14" fill="#161b22" stroke="#30363d"/>
+<polyline points="698,116 718,74 738,116 758,74 778,116 798,74 818,116 838,74 858,116" fill="none" stroke="#edf2ff" stroke-width="2.4" stroke-linejoin="round"/>
+<circle cx="874" cy="95" r="15" fill="none" stroke="#ff8c1f" stroke-width="2.4"/>
+<polyline points="867,95 872,101 882,89" fill="none" stroke="#ff8c1f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="688" cy="152" r="13" fill="#ff8c1f"/>
+<text x="688" y="157" fill="#0d1117" font-size="14" font-weight="700" text-anchor="middle">3</text>
+<text x="710" y="158" fill="#e6edf3" font-size="18" font-weight="600">Finish (Bake)</text>
+<text x="678" y="186" fill="#8b949e" font-size="13.5">Keep plain meshes, ready to ship</text>
+</g>
+</svg>

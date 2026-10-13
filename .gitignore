@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Filter Maker Pro
+tests/results/
+dist/
+*.blend1

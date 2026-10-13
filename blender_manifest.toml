@@ -1,0 +1,29 @@
+schema_version = "1.0.0"
+
+id = "filter_maker_pro"
+version = "0.6.5"
+name = "Filter Maker Pro"
+tagline = "Pleated filters with borders, wear, hair and dust"
+maintainer = "Tooboi"
+type = "add-on"
+website = "https://github.com/Tooboi/FilterMakerPro"
+
+tags = ["Modeling", "Mesh", "Object"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2024-2026 Tooboi"]
+
+[permissions]
+files = "Save and load filter presets"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "/.git/",
+  "/.github/",
+  "/docs/",
+  "/tests/",
+  "*.zip",
+]
