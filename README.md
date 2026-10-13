@@ -73,7 +73,7 @@
     <td valign="top">
       <img src="docs/images/icons/hair.svg" width="44" alt=""><br>
       <b>Hair &amp; dust</b><br>
-      Geometry Nodes scatter instances generated strand curves and dust pieces (flakes, clumps, grit, lint). Hair lies mostly flat, the two kinds never share spawn points, and both fade out near the border.
+      A Geometry Nodes scatter turns generated strand curves into hairs of constant width that close to a point at both ends, and scatters dust pieces (flakes, clumps, grit, lint). Every filter shares one hair and one dust collection. Hair lies mostly flat, the two kinds never share spawn points, and both fade out near the border.
     </td>
   </tr>
   <tr>
@@ -90,7 +90,7 @@
     <td valign="top">
       <img src="docs/images/icons/finish.svg" width="44" alt=""><br>
       <b>Live and fast</b><br>
-      Edits regenerate as you drag. Scatter-only sliders update in about 5 ms, and the pleated sheet is cached between edits.
+      Edits regenerate as you drag. Hair and dust sliders update in about 60 ms without rebuilding the filter, and the pleated sheet is cached between edits.
     </td>
   </tr>
 </table>
@@ -258,12 +258,15 @@ Built-in: **Standard Pleated**, **Clean (no wear)**, **HEPA Fine Pleat**, **Coar
 <details>
 <summary><b>Hair</b> and <b>Dust</b></summary>
 
-Both kinds are instanced by a Geometry Nodes modifier (**Filter Maker Scatter**) on one shared emitter mesh. The pieces are generated into the **Filter Maker Library** collection, coloured brown and kept at the bottom of the Outliner. Each kind has its own settings:
+Both kinds are scattered by a Geometry Nodes modifier (**Filter Maker Scatter**) on one shared emitter mesh. The pieces live in two collections, **FM Hair Strands** and **FM Dust Pieces**, inside **Filter Maker Library** (coloured brown and kept at the bottom of the Outliner). Every filter in the file uses the same two collections. Strands have the same **Width** along their whole length, whatever their length, and close to a point at both ends.
+
+Settings marked *shared* shape the common pieces, so changing them on one filter updates every filter; the rest are per filter:
 
 | Hair | Dust |
 |---|---|
 | Density, Length, Width, Length Variation | Density, Size, Size Variation |
-| Curl, Lift (the most a strand lifts off the surface), Strand Shapes | Tilt Randomness, Dust Types (Flakes, Clumps, Grit, Lint), Piece Variants |
+| Lift (the most a strand lifts off the surface) | Tilt Randomness |
+| Curl *(shared)*, Strand Shapes *(shared)* | Dust Types: Flakes, Clumps, Grit, Lint *(shared)*, Piece Variants *(shared)* |
 | Border Falloff, Viewport Display % | Border Falloff, Viewport Display % |
 | Seed | Seed |
 
@@ -274,7 +277,7 @@ Shared: **Side** (Front, Back or Both) and **Avoid Border**.
 <summary><b>Boolean</b>, <b>Materials</b>, <b>Finish</b></summary>
 
 - **Boolean**: cuts the *source mesh* with a **Bounding Box**, an **Envelope** (the reference shape thickened over the pleats) or any **Object**; operations are Difference, Intersect and Union, with the Exact or Fast solver. The border is not cut.
-- **Materials**: filter, border, hair and dust. Defaults are created for you.
+- **Materials**: filter, border, hair and dust. Defaults are created for you. The dust material is shared by all filters; the hair material is per filter.
 - **Finish (Bake)**: applies the source Boolean, removes the cutter and turns the filter into regular objects (the filter settings are dropped).
 - **Delete Filter** (trash icon): removes the filter and everything it generated.
 </details>
@@ -285,17 +288,17 @@ Shared: **Side** (Front, Back or Both) and **Avoid Border**.
 
 Median time per edit on a 4-panel box wrap with border, hair and dust (Blender 5.2, measured with the bundled headless benchmark):
 
-| Edit | 0.5.2 | 0.6.3+ | Speed-up |
+| Edit | 0.5.2 | 0.6.6 | Speed-up |
 |---|---:|---:|---:|
-| Create box wrap | 375 ms | 200 ms | 1.9× |
-| Enable border + hair + dust | 508 ms | 121 ms | 4.2× |
-| Wear strength slider | 510 ms | 64 ms | 8× |
-| Hair density slider | 524 ms | **6 ms** | 87× |
-| Dust size slider | 522 ms | **5 ms** | 104× |
-| Pleat density slider | 547 ms | 318 ms | 1.7× |
-| Thickness toggle | 593 ms | 153 ms | 3.9× |
+| Create box wrap | 403 ms | 214 ms | 1.9× |
+| Enable border + hair + dust | 524 ms | 184 ms | 2.8× |
+| Wear strength slider | 541 ms | 113 ms | 4.8× |
+| Hair density slider | 559 ms | **58 ms** | 9.6× |
+| Dust size slider | 622 ms | **60 ms** | 10× |
+| Pleat density slider | 623 ms | 397 ms | 1.6× |
+| Thickness toggle | 714 ms | 221 ms | 3.2× |
 
-Why it's faster: the pleated sheet is cached and only rebuilt when the geometry changes; the core passes run in numpy; scatter settings are written straight into the node group, so no mesh is rebuilt; and the curve-sync handler only re-reads curves that actually changed.
+Why it's faster: the pleated sheet is cached and only rebuilt when the geometry changes; the core passes run in numpy; scatter settings are written straight into the node group, so no mesh is rebuilt; and the curve-sync handler only re-reads curves that actually changed. (Since 0.6.6 the hair is built as real geometry so its width stays constant, which makes hair/dust sliders about 60 ms instead of about 6 ms in 0.6.5. Lower **Viewport Display %** for very dense hair.)
 
 ---
 
