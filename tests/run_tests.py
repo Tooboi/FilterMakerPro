@@ -687,10 +687,212 @@ def t_border_covers_pleats():
     record("curved panel keeps the full frame width", span > 0.109, frame_width_plus_seal=round(span, 4),
            width_setting=p.border_width)
 
+# ---------------------------------------------------------------------------
+# 0.7.0: UVs, materials, shapes, end caps, game-ready
+# ---------------------------------------------------------------------------
+
+def _uv_stats(me, tile):
+    """Ratio of UV area to surface area (scaled by the tile) per face: 1.0 = no stretch."""
+    uvl = me.uv_layers.get(fm.UV_LAYER)
+    if uvl is None:
+        return None
+    ratios, lo, hi = [], [1e9, 1e9], [-1e9, -1e9]
+    for poly in me.polygons:
+        a3 = poly.area
+        if a3 < 1e-10:
+            continue
+        uvs = [uvl.data[i].uv.copy() for i in poly.loop_indices]
+        for uv in uvs:
+            lo = [min(lo[0], uv.x), min(lo[1], uv.y)]
+            hi = [max(hi[0], uv.x), max(hi[1], uv.y)]
+        a2 = 0.0
+        for k in range(len(uvs)):
+            x0, y0 = uvs[k]
+            x1, y1 = uvs[(k + 1) % len(uvs)]
+            a2 += x0 * y1 - x1 * y0
+        ratios.append(abs(a2) * 0.5 * tile * tile / a3)
+    ratios.sort()
+    n = len(ratios)
+    return dict(faces=n, median=round(ratios[n // 2], 4), p05=round(ratios[n // 20], 4),
+                p95=round(ratios[(19 * n) // 20], 4), lo=[round(x, 3) for x in lo], hi=[round(x, 3) for x in hi])
+
+
+def t_uvs():
+    clear_scene()
+    src = make_mesh("RefUV", [(0, 0, 0), (1, 0, 0), (1, 0, 0.6), (0, 0, 0.6)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.live = False
+    p.noise_strength = 0.0
+    p.use_border = True
+    p.uv_mode = 'WORLD'
+    p.uv_tile = 0.1
+    p.live = True
+    fm.regenerate(ob)
+    st = _uv_stats(ob.data, 0.1)
+    record("face filter has UVs with no stretch (real-world size)",
+           st is not None and abs(st["median"] - 1.0) < 0.02 and st["p05"] > 0.9 and st["p95"] < 1.1, **(st or {}))
+    bst = _uv_stats(p.border_obj.data, 0.1) if p.border_obj else None
+    record("border has UVs at the same texel density",
+           bst is not None and abs(bst["median"] - 1.0) < 0.15, **(bst or {}))
+    p.pleat_angle = math.radians(35)
+    st = _uv_stats(ob.data, 0.1)
+    record("UVs stay stretch-free with a pleat angle",
+           st is not None and abs(st["median"] - 1.0) < 0.02 and st["p05"] > 0.85, **(st or {}))
+    p.uv_mode = 'FIT'
+    st = _uv_stats(ob.data, 1.0)
+    record("Fit 0-1 keeps UVs inside the unit square",
+           st is not None and min(st["lo"]) > -1e-4 and max(st["hi"]) < 1.0 + 1e-4, lo=st and st["lo"], hi=st and st["hi"])
+    clear_scene()
+    bpy.ops.filter.new_line()
+    ob = bpy.context.active_object
+    p = ob.filter_maker
+    p.noise_strength = 0.0
+    st = _uv_stats(ob.data, p.uv_tile)
+    record("curve filter has stretch-free UVs",
+           st is not None and abs(st["median"] - 1.0) < 0.02 and st["p05"] > 0.9, **(st or {}))
+    clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    cube = bpy.context.active_object
+    ob, _t = faces_filter(cube, select=lambda f: abs(f.normal.z) < 0.5)
+    ob.filter_maker.noise_strength = 0.0
+    st = _uv_stats(ob.data, ob.filter_maker.uv_tile)
+    record("box wrap UVs are stretch-free around the corners",
+           st is not None and abs(st["median"] - 1.0) < 0.05 and st["p05"] > 0.8, **(st or {}))
+
+
+def t_materials():
+    clear_scene()
+    src = make_mesh("RefMat", [(0, 0, 0), (1, 0, 0), (1, 0, 0.6), (0, 0, 0.6)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.use_border = True
+    bad = []
+    for key, _n, _d in fm.FILTER_STYLES:
+        if key == 'CUSTOM':
+            continue
+        p.filter_style = key
+        m = p.filter_material
+        ok = m is not None and m.name.startswith("FM Media") and m.node_tree is not None and \
+            any(n.type == 'BSDF_PRINCIPLED' for n in m.node_tree.nodes) and ob.data.materials[0] == m
+        if not ok:
+            bad.append(key)
+    for key, _n, _d in fm.FRAME_STYLES:
+        if key == 'CUSTOM':
+            continue
+        p.frame_style = key
+        m = p.border_material
+        ok = m is not None and m.name.startswith("FM Frame") and p.border_obj.data.materials[0] == m
+        if not ok:
+            bad.append(key)
+    record("all built-in materials build and get assigned", not bad, failed=bad,
+           media=len(fm.FILTER_STYLES) - 1, frames=len(fm.FRAME_STYLES) - 1)
+    p.dirt = 0.7
+    a = ob.data.attributes.get(fm.DIRT_ATTR)
+    vals = [0.0] * len(ob.data.vertices)
+    if a is not None:
+        a.data.foreach_get("value", vals)
+    W = p.border_width
+    near = [v for v, vert in zip(vals, ob.data.vertices) if min(vert.co.x, 1 - vert.co.x, vert.co.z, 0.6 - vert.co.z) < W]
+    record("dirt mask: clean under the frame, dirty inside",
+           a is not None and max(vals) > 0.3 and (max(near) if near else 0.0) < 0.05,
+           max=round(max(vals), 3), under_frame_max=round(max(near), 3) if near else None)
+    render("09_materials_dirt", [ob] + [o for o in (p.border_obj,) if o], direction=(0.6, -1.5, 0.4))
+
+
+def t_shapes():
+    bad, info = [], {}
+    for shape, _n, _d in fm.FILTER_SHAPES:
+        clear_scene()
+        res = bpy.ops.filter.add_shape(shape=shape)
+        ob = bpy.context.active_object
+        p = ob.filter_maker if ob else None
+        ok = 'FINISHED' in res and p is not None and p.is_filter and not p.last_error and len(ob.data.polygons) > 0
+        info[shape] = dict(faces=len(ob.data.polygons) if ob else 0, error=p.last_error if p else "?",
+                           border=len(p.border_obj.data.polygons) if (p and p.border_obj) else 0)
+        if not ok:
+            bad.append(shape)
+        if ok:
+            render("10_shape_%s" % shape.lower(), [ob] + [o for o in (p.border_obj,) if o], direction=(1.0, -1.3, 0.8))
+    record("every Add Filter Shape builds", not bad, failed=bad, **info)
+
+
+def t_caps():
+    clear_scene()
+    bpy.ops.filter.add_shape(shape='CARTRIDGE')
+    ob = bpy.context.active_object
+    p = ob.filter_maker
+    p.border_caps = 'NONE'
+    n_none = len(p.border_obj.data.polygons)
+    p.border_caps = 'BOTH'
+    p.border_cap_hole = 0.0
+    n_both = len(p.border_obj.data.polygons)
+    p.border_cap_hole = 0.5
+    n_hole = len(p.border_obj.data.polygons)
+    p.border_caps = 'TOP'
+    n_top = len(p.border_obj.data.polygons)
+    record("end caps: solid, with a hole, one end",
+           n_both == n_none + 2 and n_hole > n_both and n_none < n_top < n_hole,
+           none=n_none, both_solid=n_both, both_hole=n_hole, top_hole=n_top)
+    clear_scene()
+    src = make_mesh("RefCapPanel", [(0, 0, 0), (1, 0, 0), (1, 0, 0.6), (0, 0, 0.6)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.use_border = True
+    n0 = len(p.border_obj.data.polygons)
+    p.border_caps = 'BOTH'
+    record("end caps never cover a flat panel", len(p.border_obj.data.polygons) == n0, before=n0,
+           after=len(p.border_obj.data.polygons))
+
+
+def t_game_ready():
+    clear_scene()
+    src = make_mesh("RefGame", [(0, 0, 0), (0.6, 0, 0), (0.6, 0, 0.4), (0, 0, 0.4)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.live = False
+    p.use_border = True
+    p.use_dust = True
+    p.use_hair = True
+    p.hair_density = 400.0
+    p.dust_density = 800.0
+    p.game_resolution = '512'
+    p.game_maps = {'NORMAL', 'AO', 'COLOR'}
+    p.game_export = 'GLB'
+    p.game_path = os.path.join(OUT, "game_export.glb")
+    p.live = True
+    fm.regenerate(ob)
+    high_tris = sum(len(pl.vertices) - 2 for pl in ob.data.polygons)
+    for lod in ('PLEATED', 'FLAT'):
+        p.game_lod = lod
+        t0 = time.time()
+        set_active(ob)
+        res = bpy.ops.filter.game_ready()
+        low = bpy.data.objects.get(ob.name + "_low")
+        tris = sum(len(pl.vertices) - 2 for pl in low.data.polygons) if low else 0
+        uvl = low.data.uv_layers.get(fm.UV_LAYER) if low else None
+        inside = uvl is not None and all(-1e-4 <= d.uv.x <= 1 + 1e-4 and -1e-4 <= d.uv.y <= 1 + 1e-4 for d in uvl.data)
+        nimg = bpy.data.images.get(ob.name + "_normal")
+        spread = 0.0
+        if nimg is not None and nimg.size[0]:
+            px = list(nimg.pixels[:])
+            reds = px[0::4][:: max(1, len(px) // 40000)]
+            mean = sum(reds) / len(reds)
+            spread = (sum((r - mean) ** 2 for r in reds) / len(reds)) ** 0.5
+        record("game-ready %s: low poly, packed UVs, baked maps" % lod,
+               'FINISHED' in res and low is not None and tris < high_tris * 0.25 and inside and spread > 0.01,
+               seconds=round(time.time() - t0, 1), low_tris=tris, high_tris=high_tris, uvs_in_0_1=inside,
+               normal_map_variation=round(spread, 4))
+        if lod == 'FLAT' and low is not None:
+            render("11_game_ready_flat", [low], direction=(0.6, -1.5, 0.4))
+    record("game-ready export written", os.path.exists(p.game_path), path=p.game_path)
+
+
 for name, fn in (("new line", t_new_line), ("plane", t_plane), ("L fold", t_lfold),
                  ("box wrap", t_box_wrap), ("full featured", t_full_featured),
                  ("presets", t_presets), ("icons", t_icons), ("shared library", t_shared_library),
-                 ("border coverage", t_border_covers_pleats)):
+                 ("border coverage", t_border_covers_pleats), ("uvs", t_uvs), ("materials", t_materials),
+                 ("shapes", t_shapes), ("caps", t_caps), ("game ready", t_game_ready)):
     run(name, fn)
 
 # ---------------------------------------------------------------------------

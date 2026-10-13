@@ -63,11 +63,21 @@ STUBS = {
     "_strand_points": "raise RuntimeError(%r)" % PRO_ONLY,
     "_sync_lib": "raise RuntimeError(%r)" % PRO_ONLY,
     "save_preset": "raise RuntimeError(%r)" % PRO_ONLY,
+    "style_material": "return None",
+    "_add_end_caps": "return",
 }
+# Pro-only definitions dropped from the Lite file entirely
+REMOVE = {"_build_media", "_build_frame", "FILTER_OT_game_ready", "FILTER_PT_game", "_realized_copy",
+          "_split_sheet_uvs", "_Override", "_bm_to_object", "_game_collection", "_image_node",
+          "FILTER_OT_add_shape", "_shape_mesh"}
 tree = ast.parse(src)
 lines = src.split("\n")
 spans = []
 for node in tree.body:
+    if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in REMOVE:
+        start = node.lineno - 1 - len(node.decorator_list)
+        spans.append((start, node.end_lineno, "-" + node.name))
+        continue
     if isinstance(node, ast.FunctionDef) and node.name in STUBS:
         first = node.body[0]
         start = first.lineno - 1                       # first body line (0-based)
@@ -75,10 +85,13 @@ for node in tree.body:
                 and isinstance(first.value.value, str):
             start = first.end_lineno                   # keep the docstring
         spans.append((start, node.end_lineno, node.name))
-missing = set(STUBS) - {s[2] for s in spans}
+missing = (set(STUBS) | {"-" + n for n in REMOVE}) - {s[2] for s in spans}
 if missing:
     raise SystemExit("build_lite: functions not found: %s" % ", ".join(sorted(missing)))
 for start, end, name in sorted(spans, reverse=True):
+    if name.startswith("-"):
+        lines[start:end] = []
+        continue
     body = ["    # Filter Maker Pro only (removed from the Lite build)"]
     body += ["    " + ln for ln in STUBS[name].split("\n")]
     lines[start:end] = body
@@ -86,7 +99,9 @@ src = "\n".join(lines)
 
 # ---- Pro settings are switched off whenever Lite rebuilds a filter ------------
 rep('''def regenerate(obj):''', '''_LITE_OFF = (("use_hair", False), ("use_dust", False), ("use_boolean", False),
-             ("noise_strength", 0.0), ("border_profile", 'FLAT'), ("border_overhang", 0.0))
+             ("noise_strength", 0.0), ("border_profile", 'FLAT'), ("border_overhang", 0.0),
+             ("border_caps", 'NONE'), ("filter_style", 'CUSTOM'), ("frame_style", 'CUSTOM'),
+             ("dirt", 0.0))
 
 
 def _lite_gate(p):
@@ -111,6 +126,33 @@ rep('''    p.last_error = ""
     tm = {}''')
 
 # ---- UI ---------------------------------------------------------------------
+rep('''
+        col.operator_menu_enum("filter.add_shape", "shape", text="Add Filter Shape", icon=ic('MESH_GRID'))''', '')
+rep('''        c.label(text="End caps (rings, cylinders)")
+        c.prop(p, "border_caps", text="")
+        sub = c.row(align=True)
+        sub.active = p.border_caps != 'NONE'
+        sub.prop(p, "border_cap_hole", slider=True)
+        c.separator()
+''', '')
+rep('''        col = layout.column(align=True)
+        col.prop(p, "filter_style")
+        if p.filter_style == 'CUSTOM':
+            col.template_ID(p, "filter_material", new="material.new")
+        if p.use_border:
+            col.separator()
+            col.prop(p, "frame_style")
+            if p.frame_style == 'CUSTOM':
+                col.template_ID(p, "border_material", new="material.new")
+        col.separator()
+        row = col.row(align=True)
+        row.active = p.filter_style != 'CUSTOM' or p.frame_style != 'CUSTOM'
+        row.prop(p, "dirt", slider=True)
+        col.separator()''', '''        col = layout.column(align=True)
+        col.template_ID(p, "filter_material", new="material.new")
+        if p.use_border:
+            col.template_ID(p, "border_material", new="material.new")
+        col.separator()''')
 rep('''        row.operator("filter.randomize", text="Randomize", icon=ic('FORCE_VORTEX'))
 ''', '')
 rep('''        layout.prop(p, "border_profile", expand=True)
@@ -143,6 +185,7 @@ def _teardown():''')
 m = re.search(r"classes = \((.*?)\)\n", src, re.S)
 names = [n.strip() for n in m.group(1).replace("\n", " ").split(",") if n.strip()]
 drop = {"FILTER_PT_presets", "FILTER_PT_wear", "FILTER_PT_hair", "FILTER_PT_dust", "FILTER_PT_boolean",
+        "FILTER_PT_game", "FILTER_OT_game_ready", "FILTER_OT_add_shape",
         "FILTER_OT_preset_apply", "FILTER_OT_preset_save", "FILTER_OT_preset_update",
         "FILTER_OT_preset_delete", "FILTER_OT_randomize", "FILTER_OT_use_reference"}
 unknown = drop - set(names)

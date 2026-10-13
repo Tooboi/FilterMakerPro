@@ -14,6 +14,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 - Minimum Blender version set to 4.2 (`bl_info` and manifest).
 
+## [0.7.0] (in testing)
+
+### Added
+- **UVs on everything.** The pleated sheet is unrolled flat across the folds, so textures keep their proportions on flanks and bevels (no stretching); the frame and end caps get matching UVs. **Real-World Size** tiles textures at a fixed size on every filter (Texture Size), **Fit 0-1** scales each part into the UV square.
+- **Built-in materials.** Media: Paper, Synthetic, HEPA, Fibreglass, Carbon. Frame: Painted Metal, Galvanised, Aluminium, Cardboard, Plastic, Rubber. All procedural and texture-free, driven by the new UVs.
+- **Dirt.** One slider builds a dirt mask that is heaviest in the middle and in the folds and clean under the frame (mesh attributes `fm_dirt` and `fm_edge`, usable in your own shaders too).
+- **Add Filter Shape:** Panel, Round Panel, Cartridge (with end caps), V-Bank and Box Wrap at the 3D cursor.
+- **End caps** for ring-shaped filters (cartridges, box wraps), with an optional centre hole.
+- **Game-Ready panel:** one click builds a low-poly copy (low-poly pleats or a flat card), packs its UVs into 0-1, bakes Normal / AO / Base Color / Roughness from the full filter (including hair and dust) with Cycles, and can export FBX or glTF.
+
+### Changed
+- New filters start with the Paper media and Painted Metal frame; presets set matching materials (HEPA, Coarse Furnace, Dusty Used).
+- Faster mesh assembly for face and curve filters (numpy + `foreach_set` instead of `from_pydata` / per-vertex creation).
+
 ## [0.6.6]
 
 ### Added

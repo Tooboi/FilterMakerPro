@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Filter Maker Pro",
     "author": "Tooboi",
-    "version": (0, 6, 6),
+    "version": (0, 7, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar (N) > Filter Maker",
     "description": "Pleated filter generator with instanced hair/dust particle systems, borders and presets.",
@@ -321,6 +321,61 @@ def _height_dir(p):
     return d
 
 
+def _curve_strip_np(bm, q3, wv, uacc, u_end, d, H, rows, cl):
+    """Extrude the pleated path into a strip (numpy + foreach_set): vertex (i, k) is
+    station i at height row k; UVs = (unrolled length, height) in metres."""
+    n = len(q3)
+    Q = np.asarray([tuple(q) for q in q3], dtype=np.float64)
+    hs = H * np.arange(rows + 1) / rows
+    coords = (Q[:, None, :] + np.asarray(tuple(d))[None, None, :] * hs[None, :, None]).reshape(-1, 3)
+    ncol = n if cl else n - 1
+    i = np.repeat(np.arange(ncol), rows)
+    k = np.tile(np.arange(rows), ncol)
+    j = (i + 1) % n
+    R = rows + 1
+    quads = np.stack([i * R + k, j * R + k, j * R + k + 1, i * R + k + 1], axis=1)
+    U = np.asarray(uacc, dtype=np.float64)
+    ui = U[i]
+    uj = np.where(j > i, U[j], u_end)
+    v0, v1 = hs[k], hs[k + 1]
+    luv = np.stack([np.stack([ui, v0], 1), np.stack([uj, v0], 1),
+                    np.stack([uj, v1], 1), np.stack([ui, v1], 1)], axis=1).reshape(-1, 2)
+    me = bpy.data.meshes.new(".FM strip tmp")
+    try:
+        _mesh_from_arrays(me, coords, quads.tolist())
+        uvl = me.uv_layers.new(name=UV_LAYER)
+        if len(uvl.data) == len(luv):
+            uvl.data.foreach_set("uv", luv.astype(np.float32).ravel())
+        attr = me.attributes.new(PLEAT_ATTR, 'FLOAT', 'POINT')
+        if len(attr.data) == n * R:
+            attr.data.foreach_set("value", np.repeat(np.asarray(wv, dtype=np.float32), R))
+        me.update()
+        bm.from_mesh(me)
+    finally:
+        bpy.data.meshes.remove(me)
+
+
+def _curve_strip_py(bm, q3, wv, uacc, u_end, d, H, rows, cl):
+    n = len(q3)
+    uvl = bm.loops.layers.uv.get(UV_LAYER) or bm.loops.layers.uv.new(UV_LAYER)
+    pl = bm.verts.layers.float.get(PLEAT_ATTR) or bm.verts.layers.float.new(PLEAT_ATTR)
+    cols = [[bm.verts.new(q3[i] + d * (H * k / rows)) for k in range(rows + 1)] for i in range(n)]
+    for i in range(n):
+        for vert in cols[i]:
+            vert[pl] = wv[i]
+    for i in range(n if cl else n - 1):
+        j = (i + 1) % n
+        ui, uj = uacc[i], (uacc[j] if j > i else u_end)
+        for k in range(rows):
+            try:
+                f = bm.faces.new((cols[i][k], cols[j][k], cols[j][k + 1], cols[i][k + 1]))
+            except ValueError:
+                continue
+            v0, v1 = H * k / rows, H * (k + 1) / rows
+            for lp, uv in zip(f.loops, ((ui, v0), (uj, v0), (uj, v1), (ui, v1))):
+                lp[uvl].uv = uv
+
+
 def build_curve(bm, p, src, ref=None):
     d, H = _height_dir(p), max(p.height, 1e-5)
     rows = max(1, min(200, int(round(H * p.detail))))
@@ -358,7 +413,7 @@ def build_curve(bm, p, src, ref=None):
                 poss.insert(0, 0.0)
             poss.append(Lp)
         cp = _resample_at(pts, [q * period for q in poss], cl)
-        n, q3 = len(cp), []
+        n, q3, wv = len(cp), [], []
         for i, c in enumerate(cp):
             prev = cp[i - 1] if (i > 0 or cl) else c
             nxt = cp[(i + 1) % n] if (i < n - 1 or cl) else c
@@ -371,15 +426,19 @@ def build_curve(bm, p, src, ref=None):
             if side.length < 1e-9:
                 side = Vector((1, 0, 0))
             side.normalize()
-            q3.append(c + side * (depth * ev(poss[i] + p.pleat_phase)))
-        cols = [[bm.verts.new(q3[i] + d * (H * k / rows)) for k in range(rows + 1)] for i in range(n)]
-        for i in range(n if cl else n - 1):
-            j = (i + 1) % n
-            for k in range(rows):
-                try:
-                    bm.faces.new((cols[i][k], cols[j][k], cols[j][k + 1], cols[i][k + 1]))
-                except ValueError:
-                    pass
+            w = ev(poss[i] + p.pleat_phase)
+            wv.append(w)
+            q3.append(c + side * (depth * w))
+        # UVs in metres: unrolled length along the pleated path x height (an extruded
+        # strip unrolls flat, so this is stretch-free).
+        uacc = [0.0]
+        for i in range(1, n):
+            uacc.append(uacc[-1] + (q3[i] - q3[i - 1]).length)
+        u_end = uacc[-1] + ((q3[0] - q3[-1]).length if cl else 0.0)
+        if np is not None:
+            _curve_strip_np(bm, q3, wv, uacc, u_end, d, H, rows, cl)
+        else:
+            _curve_strip_py(bm, q3, wv, uacc, u_end, d, H, rows, cl)
         if ref is not None:
             _wall_path(ref, pts, cl, d, H, p.pleat_density)
 
@@ -727,7 +786,7 @@ def _grid_mesh(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         pos = cos[i] * w[0] + cos[j] * w[1] + cos[k] * w[2]
         nrm = vnorm[i] * w[0] + vnorm[j] * w[1] + vnorm[k] * w[2]
         nrm = nrm.normalized() if nrm.length > 1e-12 else vnorm[i].copy()
-        verts[key] = (pos, nrm, pu)
+        verts[key] = (pos, nrm, pu, pv)
 
     # Grid corners: which triangle contains each one.
     corner_ok = {}
@@ -901,7 +960,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
 
     Interior cells are found and built with array maths; only the cells crossed by
     the outline go through the clipping / merging path. Returns
-    (positions (N,3), normals (N,3), u (N,), faces as vertex-index lists).
+    (positions (N,3), normals (N,3), u (N,), v (N,), faces as vertex-index lists).
     """
     nU, nV = len(UL) - 1, len(VL) - 1
     if nU < 1 or nV < 1 or not tris:
@@ -1006,7 +1065,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         complex_cells.add((int(a), int(b)))
 
     # ---- corner vertices (only the ones a face will use are kept later) ----
-    pos_list, nrm_list, u_list = [], [], []
+    pos_list, nrm_list, u_list, v_list = [], [], [], []
     corner_vid = np.full((nU + 1, nV + 1), -1, dtype=np.int64)
     li, lj = np.nonzero(located)
     if len(li):
@@ -1023,6 +1082,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         pos_list.append(cpos)
         nrm_list.append(cn)
         u_list.append(ULa[li])
+        v_list.append(VLa[lj])
     n_corner = len(li)
 
     # interior quads, counter-clockwise in (u, v)
@@ -1033,7 +1093,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
     faces = quads.tolist()
 
     # ---- outline cells: clip against the triangles, merge, strip extra points ----
-    extra_pos, extra_nrm, extra_u = [], [], []
+    extra_pos, extra_nrm, extra_u, extra_v = [], [], [], []
     extra_id = {}
 
     def near_line(lines, x):
@@ -1074,6 +1134,7 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         extra_pos.append(pos)
         extra_nrm.append(nrm)
         extra_u.append(pu)
+        extra_v.append(pv)
         extra_id[key] = v
         return v
 
@@ -1194,12 +1255,50 @@ def _grid_mesh_np(cos, vnorm, tris, tri_uv, UL, VL, qstep):
         pos_list.append(np.asarray(extra_pos))
         nrm_list.append(np.asarray(extra_nrm))
         u_list.append(np.asarray(extra_u))
+        v_list.append(np.asarray(extra_v))
     if not pos_list:
         return None
     pos = np.concatenate(pos_list) if len(pos_list) > 1 else pos_list[0]
     nrm = np.concatenate(nrm_list) if len(nrm_list) > 1 else nrm_list[0]
     us = np.concatenate(u_list) if len(u_list) > 1 else u_list[0]
-    return pos, nrm, us, faces
+    vs = np.concatenate(v_list) if len(v_list) > 1 else v_list[0]
+    return pos, nrm, us, vs, faces
+
+
+UV_LAYER = "UVMap"
+PLEAT_ATTR = "fm_pleat"          # pleat profile value per vertex: +1 ridge, -1 valley
+EDGE_ATTR = "fm_edge"            # 0 at the border's inner edge -> 1 deep inside (for dirt masks)
+
+
+def _arc_table(table, period, depth):
+    """Cumulative surface length over one pleat period (the profile unrolled flat).
+    Returns (xs, cumulative lengths, length of one period)."""
+    pts = list(table) + [(table[0][0] + 1.0, table[0][1])]
+    xs, cum, acc = [pts[0][0]], [0.0], 0.0
+    for (xa, wa), (xb, wb) in zip(pts, pts[1:]):
+        acc += math.hypot((xb - xa) * period, (wb - wa) * depth)
+        xs.append(xb)
+        cum.append(acc)
+    return xs, cum, acc
+
+
+def _arc_np(arc, x):
+    """Unrolled length at pleat coordinate x (in periods), vectorised."""
+    xs, cum, per = arc
+    x0 = xs[0]
+    k = np.floor(x - x0)
+    return k * per + np.interp(x - x0 - k + x0, xs, cum)
+
+
+def _arc_py(arc, x):
+    xs, cum, per = arc
+    x0 = xs[0]
+    k = math.floor(x - x0)
+    xm = x - x0 - k + x0
+    i = max(0, min(len(xs) - 2, bisect.bisect_right(xs, xm) - 1))
+    span = xs[i + 1] - xs[i]
+    t = 0.0 if span < 1e-12 else (xm - xs[i]) / span
+    return k * per + cum[i] + (cum[i + 1] - cum[i]) * t
 
 
 def _profile_np(table, x):
@@ -1343,10 +1442,18 @@ def _face_component(bm, p, comp):
     _t0 = time.perf_counter()
 
     used = {key for keys in faces for key in keys}
-    new_verts = {}
-    for key, (pos, nrm, pu) in verts.items():
+    new_verts, vuv = {}, {}
+    arc = _arc_table(table, period, depth)
+    uvl = bm.loops.layers.uv.get(UV_LAYER) or bm.loops.layers.uv.new(UV_LAYER)
+    pl = bm.verts.layers.float.get(PLEAT_ATTR) or bm.verts.layers.float.new(PLEAT_ATTR)
+    for key, (pos, nrm, pu, pv) in verts.items():
         if key in used:
-            new_verts[key] = bm.verts.new(pos + nrm * (depth * ev((pu - base) / period)))
+            x = (pu - base) / period
+            w = ev(x)
+            vert = bm.verts.new(pos + nrm * (depth * w))
+            vert[pl] = w
+            new_verts[key] = vert
+            vuv[vert] = (_arc_py(arc, x), pv)
     created = []
     for keys in faces:
         vl = []
@@ -1359,9 +1466,12 @@ def _face_component(bm, p, comp):
         if len(vl) < 3:
             continue
         try:
-            created.append(bm.faces.new(vl))
+            f = bm.faces.new(vl)
         except ValueError:
-            pass
+            continue
+        for lp in f.loops:
+            lp[uvl].uv = vuv[lp.vert]
+        created.append(f)
     _FACE_TIMINGS["assemble_ms"] = _FACE_TIMINGS.get("assemble_ms", 0.0) + (time.perf_counter() - _t0) * 1000.0
     _t0 = time.perf_counter()
     vlist = list(new_verts.values())
@@ -1382,6 +1492,29 @@ def _face_component(bm, p, comp):
     _FACE_TIMINGS["cleanup_ms"] = _FACE_TIMINGS.get("cleanup_ms", 0.0) + (time.perf_counter() - _t0) * 1000.0
 
 
+def _mesh_from_arrays(me, coords, faces):
+    """Fill an empty mesh from vertex coordinates and polygon index lists with
+    foreach_set (several times faster than from_pydata on big grids)."""
+    nv = len(coords)
+    sizes = np.fromiter((len(f) for f in faces), dtype=np.int32, count=len(faces))
+    loops = np.fromiter((i for f in faces for i in f), dtype=np.int32, count=int(sizes.sum()))
+    starts = np.zeros(len(faces), dtype=np.int32)
+    if len(faces) > 1:
+        starts[1:] = np.cumsum(sizes)[:-1]
+    me.vertices.add(nv)
+    me.vertices.foreach_set("co", np.asarray(coords, dtype=np.float32).ravel())
+    me.loops.add(len(loops))
+    me.loops.foreach_set("vertex_index", loops)
+    me.polygons.add(len(faces))
+    me.polygons.foreach_set("loop_start", starts)
+    try:
+        me.polygons.foreach_set("loop_total", sizes)
+    except Exception:
+        pass                                  # read-only in newer Blender (derived from loop_start)
+    me.update(calc_edges=True)
+    me.validate(clean_customdata=False)
+
+
 def _face_component_np(bm, p, cos, vnorm, tris, tri_uv, UL, VL, qstep, table, base, period, depth, size):
     """Fast path: numpy grid, vectorised pleat displacement, C-speed mesh assembly."""
     _t0 = time.perf_counter()
@@ -1389,7 +1522,7 @@ def _face_component_np(bm, p, cos, vnorm, tris, tri_uv, UL, VL, qstep, table, ba
     _FACE_TIMINGS["grid_ms"] = _FACE_TIMINGS.get("grid_ms", 0.0) + (time.perf_counter() - _t0) * 1000.0
     if res is None:
         return True
-    pos, nrm, us, faces = res
+    pos, nrm, us, vs, faces = res
     if not faces:
         return True
     _t0 = time.perf_counter()
@@ -1399,8 +1532,13 @@ def _face_component_np(bm, p, cos, vnorm, tris, tri_uv, UL, VL, qstep, table, ba
         used[f] = True
     remap = np.full(len(pos), -1, dtype=np.int64)
     remap[used] = np.arange(int(used.sum()))
-    disp = depth * _profile_np(table, (us[used] - base) / period)
-    coords = pos[used] + nrm[used] * disp[:, None]
+    xq = (us[used] - base) / period
+    prof = _profile_np(table, xq)
+    coords = pos[used] + nrm[used] * (depth * prof)[:, None]
+    # UVs in metres: unrolled length across the pleats x length along them, so the
+    # texture keeps its proportions on every fold (no stretching on flanks or bevels).
+    uv_u = _arc_np(_arc_table(table, period, depth), xq)
+    uv_v = vs[used]
     faces = [remap[f].tolist() for f in faces]
     n_quads = 0
     for f in faces:
@@ -1409,7 +1547,13 @@ def _face_component_np(bm, p, cos, vnorm, tris, tri_uv, UL, VL, qstep, table, ba
         n_quads += 1
     tmp_me = bpy.data.meshes.new(".FM grid tmp")
     try:
-        tmp_me.from_pydata(coords.tolist(), [], faces)
+        _mesh_from_arrays(tmp_me, coords, faces)
+        loop_v = np.empty(len(tmp_me.loops), dtype=np.int32)
+        tmp_me.loops.foreach_get("vertex_index", loop_v)
+        uvl = tmp_me.uv_layers.new(name=UV_LAYER)
+        uvl.data.foreach_set("uv", np.stack([uv_u[loop_v], uv_v[loop_v]], axis=1).astype(np.float32).ravel())
+        attr = tmp_me.attributes.new(PLEAT_ATTR, 'FLOAT', 'POINT')
+        attr.data.foreach_set("value", prof.astype(np.float32))
         tmp_me.update()
         bm.verts.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
@@ -1770,13 +1914,25 @@ def _sweep_loop(co, nrm, inw_edge, sec, face_n=None):
     for k in range(n):
         for j in range(m_):
             verts.append(cols[j][k])
-    quads = []
+    # UVs in metres: length along the loop x length around the cross-section
+    ucum = [0.0]
+    for k in range(1, n):
+        ucum.append(ucum[-1] + (co[k] - co[k - 1]).length)
+    u_end = ucum[-1] + (co[0] - co[-1]).length
+    vcum = [0.0]
+    for j in range(1, m_):
+        vcum.append(vcum[-1] + math.hypot(sec[j][0] - sec[j - 1][0], sec[j][1] - sec[j - 1][1]))
+    v_end = vcum[-1] + math.hypot(sec[0][0] - sec[-1][0], sec[0][1] - sec[-1][1])
+    quads, uvs = [], []
     for k in range(n):
         k2 = (k + 1) % n
+        ua, ub = ucum[k], (ucum[k2] if k2 > k else u_end)
         for j in range(m_):
             j2 = (j + 1) % m_
+            va, vb = vcum[j], (vcum[j2] if j2 > j else v_end)
             quads.append((k * m_ + j, k2 * m_ + j, k2 * m_ + j2, k * m_ + j2))
-    return verts, quads
+            uvs.append(((ua, va), (ub, va), (ub, vb), (ua, vb)))
+    return verts, quads, uvs
 
 
 def build_border(p, rb):
@@ -1794,6 +1950,7 @@ def build_border(p, rb):
     if len(sec) < 3:
         return None
     fb = bmesh.new()
+    loops_out = []
     for ids, cl in _chains(bedges):
         if not cl or len(ids) < 3:
             continue
@@ -1819,18 +1976,87 @@ def build_border(p, rb):
                 iv = -iv
             inw.append(iv)
         nrm = [v.normal.copy() if v.normal.length > 1e-9 else Vector((0, 0, 1)) for v in P]
-        verts, quads = _sweep_loop([v.co for v in P], nrm, inw, sec, fns)
+        verts, quads, quvs = _sweep_loop([v.co for v in P], nrm, inw, sec, fns)
         fv = [fb.verts.new(c) for c in verts]
-        for q in quads:
+        uvl = fb.loops.layers.uv.get(UV_LAYER) or fb.loops.layers.uv.new(UV_LAYER)
+        for q, quv in zip(quads, quvs):
             try:
-                fb.faces.new([fv[i] for i in q])
+                f = fb.faces.new([fv[i] for i in q])
             except ValueError:
-                pass
+                continue
+            for lp, uv in zip(f.loops, quv):
+                lp[uvl].uv = uv
+        loops_out.append((fv, len(sec), sec))
     if not fb.faces:
         fb.free()
         return None
     bmesh.ops.recalc_face_normals(fb, faces=fb.faces[:])
+    caps = getattr(p, "border_caps", 'NONE')
+    if caps != 'NONE' and len(loops_out) >= 2:
+        _add_end_caps(fb, p, loops_out, caps)
     return fb
+
+
+def _add_end_caps(fb, p, loops_out, caps):
+    """Close the ends of a ring-shaped filter (cartridge / cylinder): a plate across
+    each chosen border ring, optionally with a round hole in the middle."""
+    uvl = fb.loops.layers.uv.get(UV_LAYER) or fb.loops.layers.uv.new(UV_LAYER)
+    rings = []
+    for fv, m_, sec in loops_out:
+        # the section point at the very end of the frame, closest to the axis
+        idx = min(range(m_), key=lambda j: (round(sec[j][0], 9), sec[j][1]))
+        ring = [fv[k * m_ + idx] for k in range(len(fv) // m_)]
+        if len(ring) >= 3:
+            c = sum((v.co for v in ring), Vector()) / len(ring)
+            rings.append((ring, c))
+    if len(rings) < 2:
+        return
+    axis = rings[-1][1] - rings[0][1]
+    if axis.length < 1e-9:
+        return
+    hd = _height_dir(p)
+    if axis.dot(hd) < 0:
+        axis = -axis
+    axis.normalize()
+    order = sorted(rings, key=lambda rc: rc[1].dot(axis))
+    chosen = {'BOTH': order, 'BOTTOM': order[:1], 'TOP': order[-1:]}.get(caps, [])
+    hole = max(0.0, min(0.95, getattr(p, "border_cap_hole", 0.0)))
+    for ring, c in chosen:
+        nrm = Vector()
+        for a, b in zip(ring, ring[1:] + ring[:1]):
+            nrm += (a.co - c).cross(b.co - c)
+        if nrm.length < 1e-12:
+            continue
+        nrm.normalize()
+        ref = Vector((1, 0, 0)) if abs(nrm.x) < 0.9 else Vector((0, 1, 0))
+        ex = (ref - nrm * ref.dot(nrm)).normalized()
+        ey = nrm.cross(ex)
+
+        def uv_of(co):
+            d = co - c
+            return (d.dot(ex), d.dot(ey))
+        new_faces = []
+        if hole < 1e-4:
+            try:
+                new_faces.append(fb.faces.new(ring))
+            except ValueError:
+                pass
+        else:
+            inner = [fb.verts.new(c + (v.co - c) * hole) for v in ring]
+            n = len(ring)
+            for k in range(n):
+                k2 = (k + 1) % n
+                try:
+                    new_faces.append(fb.faces.new((ring[k], ring[k2], inner[k2], inner[k])))
+                except ValueError:
+                    pass
+        for f in new_faces:
+            # face the plate away from the filter (outwards along the axis)
+            f.normal_update()
+            if f.normal.dot(c - sum((r[1] for r in rings), Vector()) / len(rings)) < 0:
+                f.normal_flip()
+            for lp in f.loops:
+                lp[uvl].uv = uv_of(lp.vert.co)
 
 
 # ---------------------------------------------------------------------------
@@ -3293,6 +3519,328 @@ def refresh_scatter(obj, p, emitter=None):
 
 
 
+# ---------------------------------------------------------------------------
+# UV space, dirt masks and built-in materials
+# ---------------------------------------------------------------------------
+GAME_MAPS = (('NORMAL', "Normal", "Tangent-space normal map"),
+             ('AO', "AO", "Ambient occlusion"),
+             ('COLOR', "Base Color", "Diffuse colour of the materials"),
+             ('ROUGHNESS', "Roughness", "Roughness of the materials"))
+DIRT_ATTR = "fm_dirt"            # per-vertex dirt amount (0..1), read by the built-in materials
+STYLE_VERSION = 1
+
+FILTER_STYLES = (
+    ('CUSTOM', "Custom", "Use the material in the Filter Material slot"),
+    ('PAPER', "Paper", "White cellulose filter paper with fine fibres"),
+    ('SYNTHETIC', "Synthetic", "Light blue synthetic media"),
+    ('HEPA', "HEPA", "Bright white, very fine HEPA media"),
+    ('FIBERGLASS', "Fibreglass", "Yellow fibreglass media"),
+    ('CARBON', "Carbon", "Dark activated-carbon media with speckles"),
+)
+FRAME_STYLES = (
+    ('CUSTOM', "Custom", "Use the material in the Border Material slot"),
+    ('PAINTED', "Painted Metal", "Dark powder-coated metal"),
+    ('GALVANIZED', "Galvanised", "Galvanised steel with zinc spangles"),
+    ('ALUMINIUM', "Aluminium", "Brushed aluminium"),
+    ('CARDBOARD', "Cardboard", "Brown corrugated cardboard"),
+    ('PLASTIC', "Plastic", "Off-white moulded plastic"),
+    ('RUBBER', "Rubber", "Black rubber / foam gasket"),
+)
+_MEDIA = {
+    'PAPER': dict(color=(0.86, 0.84, 0.76), rough=0.88, fiber=1.0, speck=0.0, sheen=0.25),
+    'SYNTHETIC': dict(color=(0.62, 0.74, 0.86), rough=0.8, fiber=0.6, speck=0.0, sheen=0.35),
+    'HEPA': dict(color=(0.93, 0.94, 0.95), rough=0.9, fiber=0.35, speck=0.0, sheen=0.2),
+    'FIBERGLASS': dict(color=(0.86, 0.7, 0.32), rough=0.75, fiber=1.4, speck=0.0, sheen=0.3),
+    'CARBON': dict(color=(0.07, 0.07, 0.075), rough=0.92, fiber=0.4, speck=1.0, sheen=0.0),
+}
+_FRAMES = {
+    'PAINTED': dict(color=(0.035, 0.037, 0.04), rough=0.55, metal=0.0, pattern='NOISE'),
+    'GALVANIZED': dict(color=(0.62, 0.63, 0.65), rough=0.32, metal=1.0, pattern='SPANGLE'),
+    'ALUMINIUM': dict(color=(0.8, 0.81, 0.83), rough=0.28, metal=1.0, pattern='BRUSHED'),
+    'CARDBOARD': dict(color=(0.42, 0.3, 0.18), rough=0.92, metal=0.0, pattern='FIBER'),
+    'PLASTIC': dict(color=(0.78, 0.78, 0.75), rough=0.42, metal=0.0, pattern='NOISE'),
+    'RUBBER': dict(color=(0.025, 0.025, 0.027), rough=0.86, metal=0.0, pattern='NOISE'),
+}
+_DIRT_COLOR = (0.2, 0.17, 0.13, 1.0)
+
+
+def _apply_uv_space(me, p):
+    """Turn the raw UVs (metres) into the chosen UV space."""
+    uvl = me.uv_layers.get(UV_LAYER) if me is not None else None
+    if uvl is None or not len(uvl.data) or np is None:
+        return
+    uv = np.empty(len(uvl.data) * 2, dtype=np.float32)
+    uvl.data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2)
+    if getattr(p, "uv_mode", 'WORLD') == 'FIT':
+        lo = uv.min(axis=0)
+        span = max(float((uv.max(axis=0) - lo).max()), 1e-9)
+        uv = (uv - lo) / span
+    else:
+        uv = uv / max(getattr(p, "uv_tile", 0.1), 1e-6)
+    uvl.data.foreach_set("uv", uv.astype(np.float32).ravel())
+
+
+def _write_masks(bm, p, dist, W):
+    """Per-vertex fm_edge (0 at the frame's inner edge -> 1 far inside) and fm_dirt
+    (dirt amount x where dirt collects: away from the frame and in the folds)."""
+    pl = bm.verts.layers.float.get(PLEAT_ATTR)
+    el = bm.verts.layers.float.get(EDGE_ATTR) or bm.verts.layers.float.new(EDGE_ATTR)
+    dl = bm.verts.layers.float.get(DIRT_ATTR) or bm.verts.layers.float.new(DIRT_ATTR)
+    verts = list(bm.verts)
+    amount = max(0.0, min(1.0, getattr(p, "dirt", 0.0)))
+    if dist is not None and len(dist) == len(verts):
+        inner = [d - W for d in dist]
+        span = max(max(inner) if inner else 0.0, 1e-6)
+        edge = [max(0.0, min(1.0, x / (0.6 * span))) for x in inner]
+    else:
+        edge = [1.0] * len(verts)
+    for v, e in zip(verts, edge):
+        w = v[pl] if pl is not None else 0.0
+        fold = 0.5 * (1.0 - w)                      # 1 in the valleys, 0 on the ridges
+        v[el] = e
+        v[dl] = amount * _smoothstep(e) * (0.6 + 0.4 * fold)
+
+
+def _set_frame_dirt(fb, p):
+    dl = fb.verts.layers.float.get(DIRT_ATTR) or fb.verts.layers.float.new(DIRT_ATTR)
+    amount = 0.45 * max(0.0, min(1.0, getattr(p, "dirt", 0.0)))
+    for v in fb.verts:
+        v[dl] = amount
+
+
+def _mat_nodes(mat):
+    """Fresh node tree; returns (nodes, links, principled, output)."""
+    safe = getattr(mat, "use_nodes", None)
+    if safe is not None and not mat.use_nodes:
+        try:
+            mat.use_nodes = True
+        except Exception:
+            pass
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    out.location = (900, 0)
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (600, 0)
+    nt.links.new(bsdf.outputs[0], out.inputs[0])
+    return nt.nodes, nt.links, bsdf, out
+
+
+def _sock(sockets, names, types=None):
+    for nm in (names if isinstance(names, (list, tuple)) else (names,)):
+        try:
+            return _ng_sock(sockets, nm, types)
+        except KeyError:
+            pass
+    return None
+
+
+def _setin(node, names, value, types=None):
+    s = _sock(node.inputs, names, types)
+    if s is not None:
+        try:
+            s.default_value = value
+        except Exception:
+            pass
+    return s
+
+
+def _mix_rgb(nodes, links, x, y, fac, a, b):
+    """Colour mix (A -> B by fac). fac/a/b are sockets or values."""
+    m = nodes.new("ShaderNodeMix")
+    m.location = (x, y)
+    m.data_type = 'RGBA'
+    C = {'RGBA'}
+    for names, v, types in ((("Factor", "Fac"), fac, {'VALUE'}), (("A",), a, C), (("B",), b, C)):
+        s = _sock(m.inputs, names, types)
+        if s is None:
+            continue
+        if hasattr(v, "is_output"):
+            links.new(v, s)
+        else:
+            s.default_value = v
+    return _sock(m.outputs, "Result", C)
+
+
+def _math(nodes, links, x, y, op, a, b=None):
+    n = nodes.new("ShaderNodeMath")
+    n.location = (x, y)
+    n.operation = op
+    for i, v in enumerate((a, b)):
+        if v is None:
+            continue
+        if hasattr(v, "is_output"):
+            links.new(v, n.inputs[i])
+        else:
+            n.inputs[i].default_value = v
+    return n.outputs[0]
+
+
+def _attr(nodes, x, y, name):
+    a = nodes.new("ShaderNodeAttribute")
+    a.location = (x, y)
+    a.attribute_name = name
+    try:
+        a.attribute_type = 'GEOMETRY'
+    except Exception:
+        pass
+    return _sock(a.outputs, "Fac", {'VALUE'})
+
+
+def _uv(nodes, x, y):
+    n = nodes.new("ShaderNodeUVMap")
+    n.location = (x, y)
+    try:
+        n.uv_map = UV_LAYER
+    except Exception:
+        pass
+    return n.outputs[0]
+
+
+def _tex(nodes, links, kind, x, y, vec, **inputs):
+    n = nodes.new(kind)
+    n.location = (x, y)
+    for k, v in inputs.items():
+        if k.startswith("_"):
+            try:
+                setattr(n, k[1:], v)
+            except Exception:
+                pass
+        else:
+            _setin(n, k.replace("_", " "), v)
+    if vec is not None:
+        s = _sock(n.inputs, "Vector", {'VECTOR'})
+        if s is not None:
+            links.new(vec, s)
+    return n
+
+
+def _dirt_layer(nodes, links, uv, base_col, rough_in):
+    """Mix dirt over a colour/roughness using the fm_dirt attribute and a breakup noise."""
+    dirt = _attr(nodes, -900, -500, DIRT_ATTR)
+    brk = _tex(nodes, links, "ShaderNodeTexNoise", -900, -700, uv, Scale=3.0, Detail=6.0, Roughness=0.6)
+    rng = nodes.new("ShaderNodeMapRange")
+    rng.location = (-650, -700)
+    links.new(_sock(brk.outputs, "Fac", {'VALUE'}), _sock(rng.inputs, "Value", {'VALUE'}))
+    _setin(rng, "From Min", 0.3, {'VALUE'})
+    _setin(rng, "From Max", 0.7, {'VALUE'})
+    fac = _math(nodes, links, -400, -550, 'MULTIPLY', dirt, _sock(rng.outputs, "Result", {'VALUE'}))
+    fac = _math(nodes, links, -250, -550, 'MULTIPLY', fac, 1.8)
+    fac = _math(nodes, links, -100, -550, 'MINIMUM', fac, 1.0)
+    col = _mix_rgb(nodes, links, 150, -200, fac, base_col, _DIRT_COLOR)
+    rough = _math(nodes, links, 150, -450, 'ADD', rough_in, _math(nodes, links, 0, -450, 'MULTIPLY', fac, 0.12))
+    return col, rough
+
+
+def _build_media(mat, style):
+    st = _MEDIA[style]
+    nodes, links, bsdf, _out = _mat_nodes(mat)
+    uv = _uv(nodes, -1300, 0)
+    base = tuple(st["color"]) + (1.0,)
+    dark = tuple(c * 0.82 for c in st["color"]) + (1.0,)
+    fib = _tex(nodes, links, "ShaderNodeTexWave", -1050, 250, uv, Scale=18.0, Distortion=9.0,
+               Detail=6.0, _wave_type='BANDS')
+    fine = _tex(nodes, links, "ShaderNodeTexNoise", -1050, 0, uv, Scale=90.0, Detail=10.0, Roughness=0.65)
+    f_fac = _math(nodes, links, -800, 200, 'MULTIPLY', _sock(fib.outputs, "Fac", {'VALUE'}), 0.35 * st["fiber"])
+    f_fac = _math(nodes, links, -650, 200, 'ADD', f_fac,
+                  _math(nodes, links, -800, 50, 'MULTIPLY', _sock(fine.outputs, "Fac", {'VALUE'}), 0.3))
+    col = _mix_rgb(nodes, links, -450, 150, f_fac, base, dark)
+    if st["speck"] > 0:
+        vor = _tex(nodes, links, "ShaderNodeTexVoronoi", -1050, -250, uv, Scale=160.0)
+        sp = _math(nodes, links, -800, -250, 'LESS_THAN', _sock(vor.outputs, "Distance", {'VALUE'}), 0.08)
+        col = _mix_rgb(nodes, links, -300, 0, sp, col, (0.22, 0.22, 0.23, 1.0))
+    col, rough = _dirt_layer(nodes, links, uv, col, st["rough"])
+    links.new(col, _sock(bsdf.inputs, "Base Color"))
+    links.new(rough, _sock(bsdf.inputs, "Roughness"))
+    _setin(bsdf, ("Sheen Weight", "Sheen"), st["sheen"])
+    _setin(bsdf, ("Specular IOR Level", "Specular"), 0.25)
+    bump = nodes.new("ShaderNodeBump")
+    bump.location = (300, -650)
+    _setin(bump, "Strength", 0.25)
+    _setin(bump, "Distance", 0.002)
+    links.new(f_fac, _sock(bump.inputs, "Height", {'VALUE'}))
+    links.new(_sock(bump.outputs, "Normal"), _sock(bsdf.inputs, "Normal"))
+    mat.diffuse_color = base
+
+
+def _build_frame(mat, style):
+    st = _FRAMES[style]
+    nodes, links, bsdf, _out = _mat_nodes(mat)
+    uv = _uv(nodes, -1300, 0)
+    base = tuple(st["color"]) + (1.0,)
+    pat = st["pattern"]
+    if pat == 'SPANGLE':
+        t = _tex(nodes, links, "ShaderNodeTexVoronoi", -1050, 100, uv, Scale=12.0, _feature='F1')
+        f = _math(nodes, links, -800, 100, 'MULTIPLY', _sock(t.outputs, "Distance", {'VALUE'}), 0.8)
+    elif pat == 'BRUSHED':
+        mp = nodes.new("ShaderNodeMapping")
+        mp.location = (-1150, 100)
+        links.new(uv, _sock(mp.inputs, "Vector", {'VECTOR'}))
+        _setin(mp, "Scale", (1.0, 120.0, 1.0), {'VECTOR'})
+        t = _tex(nodes, links, "ShaderNodeTexNoise", -950, 100, _sock(mp.outputs, "Vector", {'VECTOR'}),
+                 Scale=40.0, Detail=4.0)
+        f = _sock(t.outputs, "Fac", {'VALUE'})
+    elif pat == 'FIBER':
+        t = _tex(nodes, links, "ShaderNodeTexWave", -1050, 100, uv, Scale=10.0, Distortion=6.0, Detail=5.0)
+        f = _sock(t.outputs, "Fac", {'VALUE'})
+    else:
+        t = _tex(nodes, links, "ShaderNodeTexNoise", -1050, 100, uv, Scale=25.0, Detail=6.0)
+        f = _sock(t.outputs, "Fac", {'VALUE'})
+    var = _math(nodes, links, -600, 100, 'MULTIPLY', f, 0.25)
+    col = _mix_rgb(nodes, links, -400, 150, var, base, tuple(c * 0.75 for c in st["color"]) + (1.0,))
+    rough0 = _math(nodes, links, -400, -100, 'ADD', st["rough"], _math(nodes, links, -550, -100, 'MULTIPLY', var, 0.4))
+    col, rough = _dirt_layer(nodes, links, uv, col, rough0)
+    links.new(col, _sock(bsdf.inputs, "Base Color"))
+    links.new(rough, _sock(bsdf.inputs, "Roughness"))
+    _setin(bsdf, "Metallic", st["metal"])
+    bump = nodes.new("ShaderNodeBump")
+    bump.location = (300, -650)
+    _setin(bump, "Strength", 0.15 if st["metal"] < 0.5 else 0.05)
+    _setin(bump, "Distance", 0.001)
+    links.new(f, _sock(bump.inputs, "Height", {'VALUE'}))
+    links.new(_sock(bump.outputs, "Normal"), _sock(bsdf.inputs, "Normal"))
+    mat.diffuse_color = base
+    mat.metallic = st["metal"]
+
+
+def style_material(kind, style):
+    """Shared built-in material for a media ('MEDIA') or frame ('FRAME') style."""
+    table = _MEDIA if kind == 'MEDIA' else _FRAMES
+    if style not in table:
+        return None
+    label = {k: n for k, n, _d in (FILTER_STYLES if kind == 'MEDIA' else FRAME_STYLES)}[style]
+    name = "FM %s %s" % ("Media" if kind == 'MEDIA' else "Frame", label)
+    mat = bpy.data.materials.get(name)
+    if mat is not None and mat.get("fm_style_v") == STYLE_VERSION:
+        return mat
+    if mat is None:
+        mat = bpy.data.materials.new(name)
+    try:
+        (_build_media if kind == 'MEDIA' else _build_frame)(mat, style)
+        mat["fm_style_v"] = STYLE_VERSION
+    except Exception:
+        traceback.print_exc()
+    return mat
+
+
+def apply_styles(p):
+    """Point the material slots at the chosen built-in styles (Custom keeps the slot)."""
+    prev = _busy[0]
+    _busy[0] = True
+    try:
+        if getattr(p, "filter_style", 'CUSTOM') != 'CUSTOM':
+            m = style_material('MEDIA', p.filter_style)
+            if m is not None and p.filter_material != m:
+                p.filter_material = m
+        if getattr(p, "frame_style", 'CUSTOM') != 'CUSTOM':
+            m = style_material('FRAME', p.frame_style)
+            if m is not None and p.border_material != m:
+                p.border_material = m
+    finally:
+        _busy[0] = prev
+
+
 # ---- the pleated sheet, cached between updates ------------------------------
 
 LAST_TIMINGS = {}
@@ -3377,6 +3925,7 @@ def regenerate(obj):
         t_last = now
 
     try:
+        apply_styles(p)
         src = json.loads(p.src)
         bm = bmesh.new()
         tm["sheet_cached"] = _build_sheet(obj, p, src, bm)
@@ -3384,12 +3933,14 @@ def regenerate(obj):
         if not tm["sheet_cached"] and p.mode == 'FACE':
             tm.update({"face_" + k: round(v, 1) for k, v in _FACE_TIMINGS.items()})
         segs, W = None, 0.0
-        if p.use_border:
+        want_masks = p.dirt > 0.0          # the built-in materials read fm_dirt (absent = clean)
+        if p.use_border or want_masks:
             rb = bmesh.new()
             build_reference(rb, p, src)
             if len(rb.faces):
-                W = _border_dims(p, _rb_small(rb))[0]
-                segs = _outline_segments(rb, W * 0.05)
+                small = _rb_small(rb)
+                W = _border_dims(p, small)[0] if p.use_border else 0.0
+                segs = _outline_segments(rb, max(W, 0.01 * (small or 1.0)) * 0.05)
         tick("reference_ms")
         bm.normal_update()
         fade = dist = None
@@ -3401,12 +3952,14 @@ def regenerate(obj):
             else:
                 dist = _outline_distance([tuple(v.co) for v in bm.verts], segs)
                 _DIST_CACHE[obj.name_full] = (dkey, dist)
-            if p.noise_strength > 0:
+            if p.noise_strength > 0 and p.use_border:
                 ramp = max(W * 0.8, 1e-9)
                 fade = [_smoothstep(d / ramp) for d in dist]
         tick("distance_ms")
         apply_noise(bm, p, fade, cache_id=obj.name_full, sheet_key=_sheet_key(p))
         bm.normal_update()
+        if want_masks:
+            _write_masks(bm, p, dist, W)
         tick("noise_ms")
         # bm.copy() keeps the vertex order, so the distances above still line up
         surface = bm.copy() if (p.use_hair or p.use_dust) else None
@@ -3427,7 +3980,7 @@ def regenerate(obj):
             _remove_child(p, "fuzz_obj")
         tick("cutter_ms")
         try:
-            update_particles(obj, p, surface, dist, W)
+            update_particles(obj, p, surface, dist if p.use_border else None, W)
         except Exception as particle_exc:
             traceback.print_exc()
             p.last_error = "Hair / dust update failed: %s" % particle_exc
@@ -3436,12 +3989,15 @@ def regenerate(obj):
             if surface is not None:
                 surface.free()
         tick("particles_ms")
-        if rb is not None and rb.faces:
+        if rb is not None and rb.faces and p.use_border:
             fb = build_border(p, rb)
             if fb is not None:
                 try:
                     apply_border_shading(fb, p)
-                    _write_child(obj, p, "border_obj", "_Border", fb, p.border_material)
+                    if want_masks:
+                        _set_frame_dirt(fb, p)
+                    bob = _write_child(obj, p, "border_obj", "_Border", fb, p.border_material)
+                    _apply_uv_space(bob.data, p)
                 finally:
                     fb.free()
             else:
@@ -3453,6 +4009,7 @@ def regenerate(obj):
         me = obj.data
         me.clear_geometry()
         bm.to_mesh(me)
+        _apply_uv_space(me, p)
         me.materials.clear()
         if p.filter_material:
             me.materials.append(p.filter_material)
@@ -3731,6 +4288,14 @@ class FilterProps(PropertyGroup):
                                             subtype='ANGLE', unit='ROTATION', update=_upd)
     border_front: _len("Front Extend", 0.01, "Extra frame thickness on the front")
     border_back: _len("Back Extend", 0.01, "Extra frame thickness on the back")
+    border_caps: EnumProperty(name="End Caps", items=[
+        ('NONE', "None", "Open ends"),
+        ('BOTH', "Both", "Close both ends of a ring-shaped filter (cartridge)"),
+        ('BOTTOM', "Bottom", "Close the lower end only"),
+        ('TOP', "Top", "Close the upper end only")], default='NONE', update=_upd,
+        description="Plates across the ends of ring-shaped filters (cylinders, cones, box wraps)")
+    border_cap_hole: FloatProperty(name="Cap Hole", default=0.0, min=0.0, max=0.95, subtype='FACTOR',
+                                   update=_upd, description="Round hole in the middle of each end cap")
 
     # Hair
     use_hair: BoolProperty(name="Hair", default=False, update=_upd,
@@ -3806,6 +4371,36 @@ class FilterProps(PropertyGroup):
                                  subtype='DISTANCE', unit='LENGTH', precision=4, update=_upd_bool)
     show_cutter: BoolProperty(name="Show Cutter", default=False, update=_upd_cutter_vis)
 
+    # Game-ready export
+    game_lod: EnumProperty(name="Low Poly", items=[
+        ('PLEATED', "Low-Poly Pleats", "Keeps the zig-zag silhouette with few polygons; bevels, wear, hair and dust go into the maps"),
+        ('FLAT', "Flat Card", "A flat panel and frame; all pleat detail goes into the normal map")], default='PLEATED')
+    game_resolution: EnumProperty(name="Texture Size", items=[
+        ('512', "512", ""), ('1024', "1024", ""), ('2048', "2048", ""), ('4096', "4096", "")], default='2048')
+    game_maps: EnumProperty(name="Maps", items=GAME_MAPS, options={'ENUM_FLAG'},
+                            default={'NORMAL', 'AO', 'COLOR'})
+    game_particles: BoolProperty(name="Include Hair & Dust", default=True,
+                                 description="Bake the hair and dust into the maps")
+    game_export: EnumProperty(name="Export", items=[
+        ('NONE', "Don't Export", "Only create the low-poly object and maps"),
+        ('FBX', "FBX", "Export the low-poly object with embedded textures"),
+        ('GLB', "glTF (.glb)", "Export the low-poly object as a binary glTF")], default='NONE')
+    game_path: StringProperty(name="Export Path", subtype='FILE_PATH', default="",
+                              description="File or folder for the export (empty: next to the .blend)")
+
+    # Built-in materials, dirt and UVs
+    filter_style: EnumProperty(name="Media", items=FILTER_STYLES, default='CUSTOM', update=_upd,
+                               description="Built-in material for the filter media")
+    frame_style: EnumProperty(name="Frame", items=FRAME_STYLES, default='CUSTOM', update=_upd,
+                              description="Built-in material for the border frame")
+    dirt: FloatProperty(name="Dirt", default=0.0, min=0.0, max=1.0, subtype='FACTOR', update=_upd,
+                        description="Dirt build-up for the built-in materials: heaviest in the middle "
+                                    "and in the folds, clean under the frame")
+    uv_mode: EnumProperty(name="UVs", items=[
+        ('WORLD', "Real-World Size", "Textures tile at the same size on every filter, fold and frame"),
+        ('FIT', "Fit 0-1", "Each part is scaled into the 0-1 UV square")], default='WORLD', update=_upd)
+    uv_tile: _len("Texture Size", 0.1, "Real-world size of one texture tile (Real-World Size UVs)", 0.0001)
+
     # Materials / generated children
     filter_material: PointerProperty(name="Filter Material", type=bpy.types.Material, update=_upd)
     border_material: PointerProperty(name="Border Material", type=bpy.types.Material, update=_upd)
@@ -3856,6 +4451,7 @@ DEFAULTS_NORM = {
     "hair_border_falloff": 0.05, "dust_border_falloff": 0.05,
     "use_boolean": False, "boolean_source": "ENVELOPE", "boolean_op": "DIFFERENCE", "boolean_solver": "EXACT",
     "cutter_margin": 0.0,
+    "filter_style": "PAPER", "frame_style": "PAINTED", "dirt": 0.0,
 }
 PRESET_KEYS = tuple(DEFAULTS_NORM)
 
@@ -3870,18 +4466,21 @@ BUILTIN_PRESETS = {
     "Standard Pleated": _mk(pleat_density=55.0, pleat_depth=0.025, noise_strength=0.0015,
                              noise_scale=0.25, noise_depth=1),
     "Clean (no wear)": _mk(pleat_density=55.0, noise_strength=0.0, use_hair=False, use_dust=False),
-    "HEPA Fine Pleat": _mk(pleat_density=80.0, pleat_depth=0.018, use_thickness=False, thickness=0.0,
+    "HEPA Fine Pleat": _mk(filter_style="HEPA", frame_style="ALUMINIUM",
+                           pleat_density=80.0, pleat_depth=0.018, use_thickness=False, thickness=0.0,
                            bevel_ridge=0.25, bevel_valley=0.25, bevel_cuts=3,
                            noise_strength=0.0008, noise_scale=0.3, noise_depth=1, use_hair=False,
                            use_dust=False),
-    "Coarse Furnace": _mk(pleat_density=38.0, pleat_depth=0.035, use_thickness=False, thickness=0.0,
+    "Coarse Furnace": _mk(filter_style="FIBERGLASS", frame_style="CARDBOARD",
+                          pleat_density=38.0, pleat_depth=0.035, use_thickness=False, thickness=0.0,
                           bevel_ridge=0.55, bevel_valley=0.45, bevel_cuts=4,
                           noise_strength=0.0025, noise_scale=0.35, noise_depth=1,
                           use_hair=False, use_dust=False),
     "Sharp Paper Fold": _mk(pleat_density=60.0, bevel_ridge=0.0, bevel_valley=0.0, bevel_cuts=1,
                             use_thickness=False, thickness=0.0, noise_strength=0.0005,
                             use_hair=False, use_dust=False),
-    "Dusty Used": _mk(pleat_density=55.0, pleat_depth=0.025, noise_strength=0.003,
+    "Dusty Used": _mk(frame_style="GALVANIZED", dirt=0.6,
+                      pleat_density=55.0, pleat_depth=0.025, noise_strength=0.003,
                       noise_scale=0.3, noise_depth=1, use_hair=True, use_dust=True,
                       hair_density=2000.0, hair_length=0.015, hair_randomness=0.25,
                       hair_curl=0.12, dust_density=8000.0, dust_size=0.003,
@@ -4155,6 +4754,506 @@ class FILTER_OT_from_selection(Operator):
         if new.filter_maker.last_error:
             self.report({'ERROR'}, new.filter_maker.last_error)
         return {'FINISHED'}
+
+
+FILTER_SHAPES = (
+    ('PANEL', "Panel", "Rectangular panel filter in a frame"),
+    ('ROUND', "Round Panel", "Circular panel filter with a round frame"),
+    ('CARTRIDGE', "Cartridge", "Cylindrical cartridge with end caps"),
+    ('VBANK', "V-Bank", "Media folded into V shapes inside one frame"),
+    ('BOX', "Box Wrap", "Pleats running around four sides of a box"),
+)
+
+
+def _shape_mesh(shape, o):
+    """Source mesh (verts, faces) for a filter shape, sized by operator settings `o`."""
+    if shape == 'PANEL':
+        w, h = o.width / 2.0, o.height
+        return [(-w, 0, 0), (w, 0, 0), (w, 0, h), (-w, 0, h)], [(0, 1, 2, 3)]
+    if shape == 'ROUND':
+        n, r = max(12, o.segments), o.radius
+        verts = [(r * math.cos(2 * math.pi * i / n), 0.0, r + r * math.sin(2 * math.pi * i / n)) for i in range(n)]
+        return verts, [tuple(range(n))]
+    if shape == 'CARTRIDGE':
+        n, r, h = max(12, o.segments), o.radius, o.height
+        verts = [(r * math.cos(2 * math.pi * i / n), r * math.sin(2 * math.pi * i / n), z)
+                 for z in (0.0, h) for i in range(n)]
+        faces = [(i, (i + 1) % n, n + (i + 1) % n, n + i) for i in range(n)]
+        return verts, faces
+    if shape == 'VBANK':
+        k, w, h, d = max(1, o.folds), o.width / 2.0, o.height, o.vdepth
+        xs = [-w + o.width * i / (2 * k) for i in range(2 * k + 1)]
+        bottom = [(x, (d if i % 2 else 0.0), 0.0) for i, x in enumerate(xs)]
+        top = [(x, y, h) for x, y, _z in bottom]
+        m = len(bottom)
+        faces = [(i, i + 1, m + i + 1, m + i) for i in range(m - 1)]
+        return bottom + top, faces
+    if shape == 'BOX':
+        w, h = o.width / 2.0, o.height
+        verts = [(-w, -w, 0), (w, -w, 0), (w, w, 0), (-w, w, 0),
+                 (-w, -w, h), (w, -w, h), (w, w, h), (-w, w, h)]
+        faces = [(0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]
+        return verts, faces
+    return [], []
+
+
+class FILTER_OT_add_shape(Operator):
+    """Add a ready-made filter shape at the 3D cursor"""
+    bl_idname = "filter.add_shape"
+    bl_label = "Add Filter Shape"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    shape: EnumProperty(name="Shape", items=FILTER_SHAPES, default='PANEL')
+    width: FloatProperty(name="Width", default=0.6, min=0.01, subtype='DISTANCE', unit='LENGTH')
+    height: FloatProperty(name="Height", default=0.4, min=0.01, subtype='DISTANCE', unit='LENGTH')
+    radius: FloatProperty(name="Radius", default=0.15, min=0.01, subtype='DISTANCE', unit='LENGTH')
+    segments: IntProperty(name="Segments", default=64, min=12, max=256)
+    folds: IntProperty(name="V Folds", default=3, min=1, max=16)
+    vdepth: FloatProperty(name="V Depth", default=0.12, min=0.005, subtype='DISTANCE', unit='LENGTH')
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "shape")
+        if self.shape in {'PANEL', 'VBANK', 'BOX'}:
+            layout.prop(self, "width")
+        if self.shape in {'ROUND', 'CARTRIDGE'}:
+            layout.prop(self, "radius")
+            layout.prop(self, "segments")
+        if self.shape != 'ROUND':
+            layout.prop(self, "height")
+        if self.shape == 'VBANK':
+            layout.prop(self, "folds")
+            layout.prop(self, "vdepth")
+
+    def invoke(self, context, event):
+        if self.shape == 'CARTRIDGE':
+            self.height = 0.3
+        return self.execute(context)
+
+    def execute(self, context):
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        verts, faces = _shape_mesh(self.shape, self)
+        if not faces:
+            return {'CANCELLED'}
+        label = dict((k, n) for k, n, _d in FILTER_SHAPES)[self.shape]
+        me = bpy.data.meshes.new("FM Source " + label)
+        me.from_pydata(verts, [], faces)
+        me.update()
+        src_ob = bpy.data.objects.new("FM Source " + label, me)
+        src_ob.location = context.scene.cursor.location
+        (context.collection or context.scene.collection).objects.link(src_ob)
+        context.view_layer.update()
+        src = faces_from_mesh(src_ob, selected_only=False)
+        ob = create_filter(context, 'FACE', src, source=src_ob)
+        src_ob.hide_render = True
+        try:
+            src_ob.hide_set(True)
+        except Exception:
+            pass
+        p = ob.filter_maker
+        p.live = False
+        p.use_border = True
+        if self.shape == 'CARTRIDGE':
+            p.border_caps = 'BOTH'
+            p.border_cap_hole = 0.55
+            p.border_width = min(p.border_width, self.height * 0.08)
+        elif self.shape == 'VBANK':
+            p.face_smooth = False
+        elif self.shape == 'BOX':
+            p.border_caps = 'NONE'
+        p.live = True
+        regenerate(ob)
+        ob.name = "Filter " + label
+        if p.last_error:
+            self.report({'WARNING'}, p.last_error)
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Game-ready workflow: low-poly copy, packed UVs, baked maps, optional export
+# ---------------------------------------------------------------------------
+
+
+class _Override:
+    """Read-only view of filter settings with a few values replaced (for the low-poly build)."""
+
+    def __init__(self, base, **values):
+        self.__dict__["_base"] = base
+        self.__dict__["_values"] = values
+
+    def __getattr__(self, name):
+        values = self.__dict__["_values"]
+        if name in values:
+            return values[name]
+        return getattr(self.__dict__["_base"], name)
+
+
+def _bm_to_object(bm, name, coll, mats=()):
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    for m in mats:
+        me.materials.append(m)
+    ob = bpy.data.objects.new(name, me)
+    coll.objects.link(ob)
+    return ob
+
+
+def _game_collection(name):
+    coll = bpy.data.collections.get(name)
+    if coll is None:
+        coll = bpy.data.collections.new(name)
+        bpy.context.scene.collection.children.link(coll)
+    return coll
+
+
+def _realized_copy(src_ob, name, coll, dg):
+    """Mesh copy of an object's evaluated geometry, with Geometry Nodes instances
+    (dust pieces) realized."""
+    tmp_group = None
+    mod = None
+    try:
+        if src_ob.type == 'MESH' and any(m.type == 'NODES' for m in src_ob.modifiers):
+            tmp_group = bpy.data.node_groups.new(".FM realize", 'GeometryNodeTree')
+            tmp_group.interface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+            tmp_group.interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+            gi = tmp_group.nodes.new("NodeGroupInput")
+            go = tmp_group.nodes.new("NodeGroupOutput")
+            rz = tmp_group.nodes.new("GeometryNodeRealizeInstances")
+            tmp_group.links.new(gi.outputs[0], rz.inputs[0])
+            tmp_group.links.new(rz.outputs[0], go.inputs[0])
+            mod = src_ob.modifiers.new(".FM realize", 'NODES')
+            mod.node_group = tmp_group
+            dg.update()
+        me = bpy.data.meshes.new_from_object(src_ob.evaluated_get(dg), preserve_all_data_layers=True,
+                                             depsgraph=dg)
+    finally:
+        if mod is not None:
+            src_ob.modifiers.remove(mod)
+        if tmp_group is not None:
+            bpy.data.node_groups.remove(tmp_group)
+        dg.update()
+    me.name = name
+    ob = bpy.data.objects.new(name, me)
+    ob.matrix_world = src_ob.matrix_world.copy()
+    coll.objects.link(ob)
+    return ob
+
+
+def _split_sheet_uvs(bm, unrolled_period):
+    """The unrolled pleat sheet is one long strip; cut it into near-square chunks
+    (on ridge lines) and stack them, so packing into 0-1 wastes little space."""
+    uvl = bm.loops.layers.uv.get(UV_LAYER)
+    if uvl is None or not bm.faces:
+        return
+    us = [lp[uvl].uv.x for f in bm.faces for lp in f.loops]
+    vs = [lp[uvl].uv.y for f in bm.faces for lp in f.loops]
+    u0, u1, v0, v1 = min(us), max(us), min(vs), max(vs)
+    ulen, vlen = u1 - u0, max(v1 - v0, 1e-9)
+    n = max(1, int(round(math.sqrt(ulen / vlen))))
+    if n <= 1:
+        return
+    chunk = ulen / n
+    if unrolled_period > 1e-9:
+        chunk = max(unrolled_period, round(chunk / unrolled_period) * unrolled_period)
+    gap = vlen * 0.04
+    for f in bm.faces:
+        cu = sum(lp[uvl].uv.x for lp in f.loops) / len(f.loops)
+        k = int((cu - u0) // chunk)
+        if k <= 0:
+            continue
+        for lp in f.loops:
+            uv = lp[uvl].uv
+            lp[uvl].uv = (uv.x - k * chunk, uv.y + k * (vlen + gap))
+
+
+def _image_node(nodes, x, y, img, non_color):
+    n = nodes.new("ShaderNodeTexImage")
+    n.location = (x, y)
+    n.image = img
+    if non_color:
+        try:
+            img.colorspace_settings.name = 'Non-Color'
+        except Exception:
+            pass
+    return n
+
+
+class FILTER_OT_game_ready(Operator):
+    """Make a game-ready copy: low-poly mesh, packed UVs and maps baked from the full filter"""
+    bl_idname = "filter.game_ready"
+    bl_label = "Make Game-Ready"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        ob = active_filter(context)
+        if ob is None:
+            return {'CANCELLED'}
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        p = ob.filter_maker
+        scene = context.scene
+        state = dict(engine=scene.render.engine, active=context.view_layer.objects.active,
+                     selected=[o for o in context.selected_objects])
+        coll = _game_collection("%s Game" % ob.name)
+        made_high = []
+        try:
+            low = self._build_low(ob, p, coll)
+            maps = set(p.game_maps)
+            images = {}
+            if maps:
+                dg = context.evaluated_depsgraph_get()
+                high_coll = _game_collection(".FM bake high")
+                srcs = [ob] + [o for o in (p.border_obj,) if o is not None]
+                if p.game_particles and p.particles_obj is not None:
+                    srcs.append(p.particles_obj)
+                for s in srcs:
+                    made_high.append(_realized_copy(s, s.name + "_high", high_coll, dg))
+                images = self._bake(context, ob, p, low, made_high, maps)
+            self._finish_material(ob, low, images)
+            path = self._export(context, ob, p, low)
+            tris = sum(len(pl.vertices) - 2 for pl in low.data.polygons)
+            msg = "Game-ready: %s (%s tris)" % (low.name, format(tris, ","))
+            if images:
+                msg += ", baked %s" % ", ".join(sorted(images))
+            if path:
+                msg += ", exported %s" % bpy.path.basename(path)
+            self.report({'INFO'}, msg)
+        except Exception as exc:
+            traceback.print_exc()
+            self.report({'ERROR'}, "Game-ready failed: %s" % exc)
+            return {'CANCELLED'}
+        finally:
+            for h in made_high:
+                me = h.data
+                bpy.data.objects.remove(h, do_unlink=True)
+                if me is not None and me.users == 0:
+                    bpy.data.meshes.remove(me)
+            hc = bpy.data.collections.get(".FM bake high")
+            if hc is not None and not hc.objects:
+                bpy.data.collections.remove(hc)
+            try:
+                scene.render.engine = state["engine"]
+            except Exception:
+                pass
+            for o in context.view_layer.objects:
+                if o is not None:
+                    o.select_set(o in state["selected"])
+            if state["active"] is not None and state["active"].name in bpy.data.objects:
+                context.view_layer.objects.active = state["active"]
+        return {'FINISHED'}
+
+    # -- low poly ---------------------------------------------------------------
+    def _build_low(self, ob, p, coll):
+        src = json.loads(p.src)
+        lo = _Override(p, bevel_ridge=0.0, bevel_valley=0.0, bevel_cuts=1, face_smooth_cuts=1,
+                       detail=max(0.5, min(p.detail, 4.0)), mesh_type='QUADS',
+                       border_profile='FLAT', border_cuts=1)
+        bm = bmesh.new()
+        try:
+            if p.game_lod == 'PLEATED':
+                (build_curve if p.mode == 'CURVE' else build_face)(bm, lo, src, None)
+            else:
+                build_reference(bm, lo, src)
+            for f in bm.faces:
+                f.material_index = 0
+            per = 0.0
+            if p.game_lod == 'PLEATED':
+                arc = _arc_table(_profile_table(0.0, 0.0, 1), 1.0 / max(p.pleat_density, 1e-3), p.pleat_depth)
+                per = arc[2]
+                _split_sheet_uvs(bm, per)
+            if p.use_border:
+                rb = bmesh.new()
+                try:
+                    build_reference(rb, lo, src)
+                    fb = build_border(lo, rb) if len(rb.faces) else None
+                finally:
+                    rb.free()
+                if fb is not None:
+                    tmp = bpy.data.meshes.new(".FM game border")
+                    try:
+                        fb.to_mesh(tmp)
+                        n0 = len(bm.faces)
+                        bm.from_mesh(tmp)
+                        bm.faces.ensure_lookup_table()
+                        for f in bm.faces[n0:]:
+                            f.material_index = 0
+                    finally:
+                        fb.free()
+                        bpy.data.meshes.remove(tmp)
+            for f in bm.faces:
+                f.smooth = p.game_lod == 'FLAT'
+            name = "%s_low" % ob.name
+            old = bpy.data.objects.get(name)
+            if old is not None:
+                me_old = old.data
+                bpy.data.objects.remove(old, do_unlink=True)
+                if me_old is not None and me_old.users == 0:
+                    bpy.data.meshes.remove(me_old)
+            low = _bm_to_object(bm, name, coll)
+        finally:
+            bm.free()
+        low.matrix_world = ob.matrix_world.copy()
+        self._pack_uvs(low, p.game_lod == 'FLAT')
+        return low
+
+    def _pack_uvs(self, low, project):
+        me = low.data
+        if UV_LAYER not in me.uv_layers:
+            me.uv_layers.new(name=UV_LAYER)
+        ctx = bpy.context
+        for o in ctx.view_layer.objects:
+            if o is not None:
+                o.select_set(False)
+        low.select_set(True)
+        ctx.view_layer.objects.active = low
+        bpy.ops.object.mode_set(mode='EDIT')
+        try:
+            bpy.ops.mesh.select_all(action='SELECT')
+            if project:
+                bpy.ops.uv.smart_project(angle_limit=math.radians(66.0), island_margin=0.01)
+            try:
+                bpy.ops.uv.select_all(action='SELECT')
+            except Exception:
+                pass
+            bpy.ops.uv.pack_islands(rotate=True, margin=0.008)
+        finally:
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+    # -- baking -----------------------------------------------------------------
+    def _bake(self, context, ob, p, low, highs, maps):
+        scene = context.scene
+        scene.render.engine = 'CYCLES'
+        try:
+            scene.cycles.samples = 32
+            scene.cycles.device = 'CPU'
+        except Exception:
+            pass
+        res = int(p.game_resolution)
+        mat = bpy.data.materials.get("%s_game" % ob.name) or bpy.data.materials.new("%s_game" % ob.name)
+        nodes, links, bsdf, _out = _mat_nodes(mat)
+        low.data.materials.clear()
+        low.data.materials.append(mat)
+        images, img_nodes = {}, {}
+        y = 300
+        for key in ('COLOR', 'ROUGHNESS', 'AO', 'NORMAL'):
+            if key not in maps:
+                continue
+            iname = "%s_%s" % (ob.name, key.lower())
+            img = bpy.data.images.get(iname)
+            if img is not None and (img.size[0] != res or img.size[1] != res):
+                bpy.data.images.remove(img)
+                img = None
+            if img is None:
+                img = bpy.data.images.new(iname, res, res, alpha=False)
+            images[key] = img
+            img_nodes[key] = _image_node(nodes, -700, y, img, key != 'COLOR')
+            y -= 300
+        F, B = _border_dims(p)[2:4] if p.use_border else (p.pleat_depth, p.pleat_depth)
+        hair = p.hair_length * (1.0 + p.hair_length_var) if (p.use_hair and p.game_particles) else 0.0
+        if p.game_lod == 'FLAT':
+            ext = max(F, B, p.pleat_depth * 1.2) + hair
+        else:
+            ext = 0.5 * p.pleat_depth + 3.0 * p.noise_strength + (p.thickness if p.use_thickness else 0.0) + hair
+        ext = max(ext, 1e-3)
+        for o in context.view_layer.objects:
+            if o is not None:
+                o.select_set(False)
+        for h in highs:
+            h.select_set(True)
+        low.select_set(True)
+        context.view_layer.objects.active = low
+        bake_args = dict(use_selected_to_active=True, cage_extrusion=ext, max_ray_distance=ext * 2.5,
+                         margin=16, use_clear=True)
+        for key, img_node in img_nodes.items():
+            nodes.active = img_node
+            for n in nodes:
+                n.select = n is img_node
+            if key == 'NORMAL':
+                bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', **bake_args)
+            elif key == 'AO':
+                bpy.ops.object.bake(type='AO', **bake_args)
+            elif key == 'COLOR':
+                bpy.ops.object.bake(type='DIFFUSE', pass_filter={'COLOR'}, **bake_args)
+            elif key == 'ROUGHNESS':
+                bpy.ops.object.bake(type='ROUGHNESS', **bake_args)
+        self._save_images(images)
+        return images
+
+    def _save_images(self, images):
+        blend = bpy.data.filepath
+        folder = bpy.path.abspath("//textures") if blend else None
+        for key, img in images.items():
+            try:
+                if folder:
+                    os.makedirs(folder, exist_ok=True)
+                    img.filepath_raw = os.path.join(folder, img.name + ".png")
+                    img.file_format = 'PNG'
+                    img.save()
+                else:
+                    img.pack()
+            except Exception:
+                traceback.print_exc()
+
+    def _finish_material(self, ob, low, images):
+        mat = bpy.data.materials.get("%s_game" % ob.name) or bpy.data.materials.new("%s_game" % ob.name)
+        nodes, links, bsdf, _out = _mat_nodes(mat)
+        y = 300
+        if 'COLOR' in images:
+            col = _image_node(nodes, -700, y, images['COLOR'], False)
+            c_out = col.outputs[0]
+            if 'AO' in images:
+                ao = _image_node(nodes, -700, y - 300, images['AO'], True)
+                c_out = _mix_rgb(nodes, links, -350, y, 1.0, col.outputs[0], ao.outputs[0])
+                mixn = c_out.node
+                try:
+                    mixn.blend_type = 'MULTIPLY'
+                except Exception:
+                    pass
+            links.new(c_out, _sock(bsdf.inputs, "Base Color"))
+        elif 'AO' in images:
+            ao = _image_node(nodes, -700, y - 300, images['AO'], True)
+            links.new(ao.outputs[0], _sock(bsdf.inputs, "Base Color"))
+        if 'ROUGHNESS' in images:
+            r = _image_node(nodes, -700, -300, images['ROUGHNESS'], True)
+            links.new(r.outputs[0], _sock(bsdf.inputs, "Roughness"))
+        if 'NORMAL' in images:
+            nimg = _image_node(nodes, -700, -600, images['NORMAL'], True)
+            nm = nodes.new("ShaderNodeNormalMap")
+            nm.location = (-300, -600)
+            try:
+                nm.uv_map = UV_LAYER
+            except Exception:
+                pass
+            links.new(nimg.outputs[0], _sock(nm.inputs, "Color"))
+            links.new(_sock(nm.outputs, "Normal"), _sock(bsdf.inputs, "Normal"))
+        low.data.materials.clear()
+        low.data.materials.append(mat)
+
+    def _export(self, context, ob, p, low):
+        if p.game_export == 'NONE':
+            return None
+        ext = ".fbx" if p.game_export == 'FBX' else ".glb"
+        path = bpy.path.abspath(p.game_path) if p.game_path else ""
+        if not path:
+            base = bpy.path.abspath("//") if bpy.data.filepath else bpy.app.tempdir
+            path = os.path.join(base, ob.name + "_game" + ext)
+        elif os.path.isdir(path) or path.endswith(("/", "\\")):
+            path = os.path.join(path, ob.name + "_game" + ext)
+        elif not path.lower().endswith(ext):
+            path += ext
+        for o in context.view_layer.objects:
+            if o is not None:
+                o.select_set(False)
+        low.select_set(True)
+        context.view_layer.objects.active = low
+        if p.game_export == 'FBX':
+            bpy.ops.export_scene.fbx(filepath=path, use_selection=True, object_types={'MESH'},
+                                     path_mode='COPY', embed_textures=True, mesh_smooth_type='FACE')
+        else:
+            bpy.ops.export_scene.gltf(filepath=path, use_selection=True, export_format='GLB')
+        return path
 
 
 class FILTER_OT_edit_source_curve(Operator):
@@ -4463,7 +5562,7 @@ def _counts(ob):
 
 
 class FILTER_PT_main(Panel):
-    bl_label = "Filter Maker Pro  0.6.6"
+    bl_label = "Filter Maker Pro  0.7.0"
     bl_idname = "FILTER_PT_main"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -4477,6 +5576,7 @@ class FILTER_PT_main(Panel):
         layout = self.layout
         col = layout.column(align=True)
         col.operator("filter.new_line", icon=ic('CURVE_PATH'))
+        col.operator_menu_enum("filter.add_shape", "shape", text="Add Filter Shape", icon=ic('MESH_GRID'))
         obj = context.active_object
         if obj and obj.type in {'MESH', 'CURVE'}:
             col.operator("filter.from_selection", text="From Curve / Edges", icon=ic('CURVE_DATA')).source = 'CURVE'
@@ -4689,6 +5789,12 @@ class FILTER_PT_border(FILTER_SubPanel, Panel):
         c.prop(p, "border_front")
         c.prop(p, "border_back")
         c.separator()
+        c.label(text="End caps (rings, cylinders)")
+        c.prop(p, "border_caps", text="")
+        sub = c.row(align=True)
+        sub.active = p.border_caps != 'NONE'
+        sub.prop(p, "border_cap_hole", slider=True)
+        c.separator()
         c.label(text="Shading")
         c.prop(p, "border_smooth")
         c.prop(p, "border_auto_smooth")
@@ -4815,9 +5921,24 @@ class FILTER_PT_materials(FILTER_SubPanel, Panel):
         if p is None:
             return
         layout = self.layout
-        layout.template_ID(p, "filter_material", new="material.new")
+        col = layout.column(align=True)
+        col.prop(p, "filter_style")
+        if p.filter_style == 'CUSTOM':
+            col.template_ID(p, "filter_material", new="material.new")
         if p.use_border:
-            layout.template_ID(p, "border_material", new="material.new")
+            col.separator()
+            col.prop(p, "frame_style")
+            if p.frame_style == 'CUSTOM':
+                col.template_ID(p, "border_material", new="material.new")
+        col.separator()
+        row = col.row(align=True)
+        row.active = p.filter_style != 'CUSTOM' or p.frame_style != 'CUSTOM'
+        row.prop(p, "dirt", slider=True)
+        col.separator()
+        col.prop(p, "uv_mode")
+        sub = col.row(align=True)
+        sub.active = p.uv_mode == 'WORLD'
+        sub.prop(p, "uv_tile")
         if p.use_hair:
             layout.template_ID(p, "hair_material", new="material.new")
         if p.use_dust:
@@ -4825,6 +5946,36 @@ class FILTER_PT_materials(FILTER_SubPanel, Panel):
         if p.use_hair or p.use_dust:
             if p.use_dust:
                 layout.label(text="The dust material is shared by all filters", icon=ic('LINKED'))
+
+
+class FILTER_PT_game(FILTER_SubPanel, Panel):
+    header_art = "finish"
+    header_icon = "EXPORT"
+    bl_label = "Game-Ready"
+    bl_idname = "FILTER_PT_game"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @safe_draw
+    def draw(self, context):
+        p = self.P(context)
+        if p is None:
+            return
+        layout = self.layout
+        col = layout.column(align=True)
+        col.prop(p, "game_lod")
+        col.prop(p, "game_resolution")
+        col.separator()
+        col.label(text="Bake maps")
+        row = col.row(align=True)
+        row.prop(p, "game_maps", expand=True)
+        col.prop(p, "game_particles")
+        col.separator()
+        col.prop(p, "game_export")
+        sub = col.row(align=True)
+        sub.active = p.game_export != 'NONE'
+        sub.prop(p, "game_path", text="")
+        layout.operator("filter.game_ready", icon=ic('EXPORT'))
+        layout.label(text="Bakes with Cycles; this can take a minute.", icon=ic('INFO'))
 
 
 class FILTER_PT_actions(FILTER_SubPanel, Panel):
@@ -5259,13 +6410,13 @@ def _particle_footer(layout, p, coll, count, noun, kind):
         col.label(text="On: %s  (modifier: %s)" % (p.particles_obj.name, SCATTER_MOD), icon=ic('MODIFIER'))
 
 
-classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_from_selection, FILTER_OT_edit_source_curve, FILTER_OT_regenerate,
+classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_add_shape, FILTER_OT_from_selection, FILTER_OT_edit_source_curve, FILTER_OT_regenerate,
            FILTER_OT_randomize, FILTER_OT_use_reference, FILTER_OT_preset_apply,
            FILTER_OT_preset_save, FILTER_OT_preset_update, FILTER_OT_preset_delete,
            FILTER_OT_finish, FILTER_OT_delete, FILTER_PT_main, FILTER_PT_presets,
            FILTER_PT_pleats, FILTER_PT_bevel, FILTER_PT_shading, FILTER_PT_wear,
            FILTER_PT_border, FILTER_PT_hair, FILTER_PT_dust, FILTER_PT_boolean,
-           FILTER_PT_materials, FILTER_PT_actions)
+           FILTER_PT_materials, FILTER_PT_game, FILTER_OT_game_ready, FILTER_PT_actions)
 
 
 # ---------------------------------------------------------------------------
