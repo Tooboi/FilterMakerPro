@@ -3527,7 +3527,7 @@ GAME_MAPS = (('NORMAL', "Normal", "Tangent-space normal map"),
              ('COLOR', "Base Color", "Diffuse colour of the materials"),
              ('ROUGHNESS', "Roughness", "Roughness of the materials"))
 DIRT_ATTR = "fm_dirt"            # per-vertex dirt amount (0..1), read by the built-in materials
-STYLE_VERSION = 1
+STYLE_VERSION = 2
 
 FILTER_STYLES = (
     ('CUSTOM', "Custom", "Use the material in the Filter Material slot"),
@@ -3627,13 +3627,33 @@ def _mat_nodes(mat):
     return nt.nodes, nt.links, bsdf, out
 
 
+_SOCK_ALIASES = {"Fac": ("Factor",), "Factor": ("Fac",), "Color": ("Colour",)}
+
+
 def _sock(sockets, names, types=None):
-    for nm in (names if isinstance(names, (list, tuple)) else (names,)):
+    """Shader socket by name, tolerant of renames between Blender versions
+    (5.x renamed the texture 'Fac' outputs to 'Factor')."""
+    names = list(names if isinstance(names, (list, tuple)) else (names,))
+    for nm in list(names):
+        names += [a for a in _SOCK_ALIASES.get(nm, ()) if a not in names]
+    for nm in names:
         try:
             return _ng_sock(sockets, nm, types)
         except KeyError:
             pass
+    # outputs only: fall back to the first enabled socket of the right type
+    if types and len(sockets) and getattr(sockets[0], "is_output", False):
+        for s in sockets:
+            if s.type in types and getattr(s, "enabled", True):
+                return s
     return None
+
+
+def _link(links, a, b):
+    """links.new that tells which socket was missing instead of a bare TypeError."""
+    if a is None or b is None:
+        raise RuntimeError("material socket missing (%s -> %s)" % (a, b))
+    return links.new(a, b)
 
 
 def _setin(node, names, value, types=None):
@@ -3657,7 +3677,7 @@ def _mix_rgb(nodes, links, x, y, fac, a, b):
         if s is None:
             continue
         if hasattr(v, "is_output"):
-            links.new(v, s)
+            _link(links, v, s)
         else:
             s.default_value = v
     return _sock(m.outputs, "Result", C)
@@ -3671,7 +3691,7 @@ def _math(nodes, links, x, y, op, a, b=None):
         if v is None:
             continue
         if hasattr(v, "is_output"):
-            links.new(v, n.inputs[i])
+            _link(links, v, n.inputs[i])
         else:
             n.inputs[i].default_value = v
     return n.outputs[0]
@@ -3712,7 +3732,7 @@ def _tex(nodes, links, kind, x, y, vec, **inputs):
     if vec is not None:
         s = _sock(n.inputs, "Vector", {'VECTOR'})
         if s is not None:
-            links.new(vec, s)
+            _link(links, vec, s)
     return n
 
 
@@ -3722,7 +3742,7 @@ def _dirt_layer(nodes, links, uv, base_col, rough_in):
     brk = _tex(nodes, links, "ShaderNodeTexNoise", -900, -700, uv, Scale=3.0, Detail=6.0, Roughness=0.6)
     rng = nodes.new("ShaderNodeMapRange")
     rng.location = (-650, -700)
-    links.new(_sock(brk.outputs, "Fac", {'VALUE'}), _sock(rng.inputs, "Value", {'VALUE'}))
+    _link(links, _sock(brk.outputs, "Fac", {'VALUE'}), _sock(rng.inputs, "Value", {'VALUE'}))
     _setin(rng, "From Min", 0.3, {'VALUE'})
     _setin(rng, "From Max", 0.7, {'VALUE'})
     fac = _math(nodes, links, -400, -550, 'MULTIPLY', dirt, _sock(rng.outputs, "Result", {'VALUE'}))
@@ -3751,16 +3771,16 @@ def _build_media(mat, style):
         sp = _math(nodes, links, -800, -250, 'LESS_THAN', _sock(vor.outputs, "Distance", {'VALUE'}), 0.08)
         col = _mix_rgb(nodes, links, -300, 0, sp, col, (0.22, 0.22, 0.23, 1.0))
     col, rough = _dirt_layer(nodes, links, uv, col, st["rough"])
-    links.new(col, _sock(bsdf.inputs, "Base Color"))
-    links.new(rough, _sock(bsdf.inputs, "Roughness"))
+    _link(links, col, _sock(bsdf.inputs, "Base Color"))
+    _link(links, rough, _sock(bsdf.inputs, "Roughness"))
     _setin(bsdf, ("Sheen Weight", "Sheen"), st["sheen"])
     _setin(bsdf, ("Specular IOR Level", "Specular"), 0.25)
     bump = nodes.new("ShaderNodeBump")
     bump.location = (300, -650)
     _setin(bump, "Strength", 0.25)
     _setin(bump, "Distance", 0.002)
-    links.new(f_fac, _sock(bump.inputs, "Height", {'VALUE'}))
-    links.new(_sock(bump.outputs, "Normal"), _sock(bsdf.inputs, "Normal"))
+    _link(links, f_fac, _sock(bump.inputs, "Height", {'VALUE'}))
+    _link(links, _sock(bump.outputs, "Normal"), _sock(bsdf.inputs, "Normal"))
     mat.diffuse_color = base
 
 
@@ -3776,7 +3796,7 @@ def _build_frame(mat, style):
     elif pat == 'BRUSHED':
         mp = nodes.new("ShaderNodeMapping")
         mp.location = (-1150, 100)
-        links.new(uv, _sock(mp.inputs, "Vector", {'VECTOR'}))
+        _link(links, uv, _sock(mp.inputs, "Vector", {'VECTOR'}))
         _setin(mp, "Scale", (1.0, 120.0, 1.0), {'VECTOR'})
         t = _tex(nodes, links, "ShaderNodeTexNoise", -950, 100, _sock(mp.outputs, "Vector", {'VECTOR'}),
                  Scale=40.0, Detail=4.0)
@@ -3791,15 +3811,15 @@ def _build_frame(mat, style):
     col = _mix_rgb(nodes, links, -400, 150, var, base, tuple(c * 0.75 for c in st["color"]) + (1.0,))
     rough0 = _math(nodes, links, -400, -100, 'ADD', st["rough"], _math(nodes, links, -550, -100, 'MULTIPLY', var, 0.4))
     col, rough = _dirt_layer(nodes, links, uv, col, rough0)
-    links.new(col, _sock(bsdf.inputs, "Base Color"))
-    links.new(rough, _sock(bsdf.inputs, "Roughness"))
+    _link(links, col, _sock(bsdf.inputs, "Base Color"))
+    _link(links, rough, _sock(bsdf.inputs, "Roughness"))
     _setin(bsdf, "Metallic", st["metal"])
     bump = nodes.new("ShaderNodeBump")
     bump.location = (300, -650)
     _setin(bump, "Strength", 0.15 if st["metal"] < 0.5 else 0.05)
     _setin(bump, "Distance", 0.001)
-    links.new(f, _sock(bump.inputs, "Height", {'VALUE'}))
-    links.new(_sock(bump.outputs, "Normal"), _sock(bsdf.inputs, "Normal"))
+    _link(links, f, _sock(bump.inputs, "Height", {'VALUE'}))
+    _link(links, _sock(bump.outputs, "Normal"), _sock(bsdf.inputs, "Normal"))
     mat.diffuse_color = base
     mat.metallic = st["metal"]
 
@@ -3819,8 +3839,11 @@ def style_material(kind, style):
     try:
         (_build_media if kind == 'MEDIA' else _build_frame)(mat, style)
         mat["fm_style_v"] = STYLE_VERSION
-    except Exception:
+        if "fm_style_error" in mat:
+            del mat["fm_style_error"]
+    except Exception as exc:
         traceback.print_exc()
+        mat["fm_style_error"] = str(exc)
     return mat
 
 
@@ -5167,17 +5190,30 @@ class FILTER_OT_game_ready(Operator):
         bake_args = dict(use_selected_to_active=True, cage_extrusion=ext, max_ray_distance=ext * 2.5,
                          margin=16, use_clear=True)
         for key, img_node in img_nodes.items():
-            nodes.active = img_node
+            # the bake target must be the selected *and* active image node, and the
+            # material must be re-evaluated so the bake sees those flags
             for n in nodes:
-                n.select = n is img_node
+                n.select = False
+            img_node.select = True
+            nodes.active = img_node
+            img_node.select = True
+            mat.node_tree.update_tag()
+            mat.update_tag()
+            low.data.update_tag()
+            context.view_layer.update()
             if key == 'NORMAL':
-                bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', **bake_args)
+                res = bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', **bake_args)
             elif key == 'AO':
-                bpy.ops.object.bake(type='AO', **bake_args)
+                res = bpy.ops.object.bake(type='AO', **bake_args)
             elif key == 'COLOR':
-                bpy.ops.object.bake(type='DIFFUSE', pass_filter={'COLOR'}, **bake_args)
-            elif key == 'ROUGHNESS':
-                bpy.ops.object.bake(type='ROUGHNESS', **bake_args)
+                res = bpy.ops.object.bake(type='DIFFUSE', pass_filter={'COLOR'}, **bake_args)
+            else:
+                res = bpy.ops.object.bake(type='ROUGHNESS', **bake_args)
+            if 'FINISHED' not in res:
+                state = ", ".join("%s(%s%s%s)" % (n.name, n.bl_idname, " sel" if n.select else "",
+                                                  " active" if nodes.active == n else "") for n in nodes)
+                raise RuntimeError("%s bake did not run (%s). Low-poly slots: %s. Nodes: %s" % (
+                    key, ", ".join(res), [m.name if m else None for m in low.data.materials], state))
         self._save_images(images)
         return images
 

@@ -774,18 +774,20 @@ def t_materials():
         p.filter_style = key
         m = p.filter_material
         ok = m is not None and m.name.startswith("FM Media") and m.node_tree is not None and \
-            any(n.type == 'BSDF_PRINCIPLED' for n in m.node_tree.nodes) and ob.data.materials[0] == m
+            any(n.type == 'BSDF_PRINCIPLED' for n in m.node_tree.nodes) and ob.data.materials[0] == m \
+            and m.get("fm_style_v") is not None and len(m.node_tree.links) > 4
         if not ok:
-            bad.append(key)
+            bad.append((key, m.get("fm_style_error") if m else None))
     for key, _n, _d in fm.FRAME_STYLES:
         if key == 'CUSTOM':
             continue
         p.frame_style = key
         m = p.border_material
-        ok = m is not None and m.name.startswith("FM Frame") and p.border_obj.data.materials[0] == m
+        ok = m is not None and m.name.startswith("FM Frame") and p.border_obj.data.materials[0] == m \
+            and m.get("fm_style_v") is not None and len(m.node_tree.links) > 2
         if not ok:
-            bad.append(key)
-    record("all built-in materials build and get assigned", not bad, failed=bad,
+            bad.append((key, m.get("fm_style_error") if m else None))
+    record("all built-in materials build without errors and get assigned", not bad, failed=bad,
            media=len(fm.FILTER_STYLES) - 1, frames=len(fm.FRAME_STYLES) - 1)
     p.dirt = 0.7
     a = ob.data.attributes.get(fm.DIRT_ATTR)
