@@ -38,6 +38,8 @@ _KEEP = [None]
 MAX_CUTS = 400
 MAX_INST = 100000
 BOOL_NAME = "Filter Boolean"
+EDITION = "PRO"                     # "LITE" in the free build (tools/build_lite.py)
+_EDITION_KEY = "filter_maker_edition"
 
 # Reserved preview state. Kept initialized even when preview creation fails.
 _ICONS = [None]
@@ -5309,7 +5311,20 @@ def _teardown():
             pass
 
 
+def _edition_conflict():
+    """Pro and Lite share the same data (so files open in either); only one may be
+    enabled at a time."""
+    other = bpy.app.driver_namespace.get(_EDITION_KEY)
+    if other and other[1] != __name__:
+        return other[0]
+    return None
+
+
 def register():
+    other = _edition_conflict()
+    if other:
+        raise RuntimeError("Filter Maker %s is already enabled. Disable it before enabling Filter Maker %s."
+                           % (other.title(), EDITION.title()))
     _teardown()
     try:
         # Register the property group and pointer before any panel can poll/draw.
@@ -5331,6 +5346,7 @@ def register():
             if getattr(handler, "__name__", "") == "_sync_curve_sources":
                 bpy.app.handlers.depsgraph_update_post.remove(handler)
         bpy.app.handlers.depsgraph_update_post.append(_sync_curve_sources)
+        bpy.app.driver_namespace[_EDITION_KEY] = (EDITION, __name__)
     except Exception:
         traceback.print_exc()
         _teardown()
@@ -5339,6 +5355,9 @@ def register():
 
 def unregister():
     _teardown()
+    other = bpy.app.driver_namespace.get(_EDITION_KEY)
+    if other and other[1] == __name__:
+        del bpy.app.driver_namespace[_EDITION_KEY]
 
 
 if __name__ == "__main__":

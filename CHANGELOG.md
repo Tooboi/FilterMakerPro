@@ -16,6 +16,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [0.6.6]
 
+### Added
+- `tools/build_lite.py` builds **Filter Maker Lite**, the free edition (all sources, pleat shaping, flat border). Lite saves the same data, so its filters open in Pro unchanged.
+- Pro and Lite refuse to be enabled at the same time, with a clear message.
+
 ### Changed
 - **One shared hair collection and one shared dust collection** for every filter in the file ("FM Hair Strands", "FM Dust Pieces"). New filters reuse them instead of adding their own copies; old per-filter collections are cleaned up automatically.
 - Curl, Strand Shapes, Dust Types, Piece Variants and the dust material are shared by all filters (marked in the panel). Density, length, width, lift, tilt, seeds and the hair material stay per filter.
