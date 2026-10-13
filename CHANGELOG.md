@@ -14,6 +14,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 - Minimum Blender version set to 4.2 (`bl_info` and manifest).
 
+## [0.6.6]
+
+### Changed
+- **One shared hair collection and one shared dust collection** for every filter in the file ("FM Hair Strands", "FM Dust Pieces"). New filters reuse them instead of adding their own copies; old per-filter collections are cleaned up automatically.
+- Curl, Strand Shapes, Dust Types, Piece Variants and the dust material are shared by all filters (marked in the panel). Density, length, width, lift, tilt, seeds and the hair material stay per filter.
+- Hair strands keep a **constant width** at any length and **close to a point at both ends**. The hair is now built as real geometry by the Geometry Nodes scatter.
+- Hair and dust Seed only change placement; presets set the shared strand / dust-piece look.
+
+### Fixed
+- Pleat ends could poke through the border: the seal past the edge now covers shell thickness and wear, Chamfer / Round bevels are limited so they never uncover the pleats, the Lip's rim now rises above the frame instead of stepping the inner part down, frames keep their full height where they bend around box corners and folds, and the frame's inner edge no longer folds back on itself at corners when the outline is densely cut (gaps and clipping at the corners).
+- Curved panels (e.g. a cylinder section) get their full border width; the width limit now measures the panel across its surface instead of its world bounding box.
+
 ## [0.6.5]
 
 ### Changed
@@ -48,7 +60,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Pleat bevel with cuts, Clouds-style wear, borders with Flat/Chamfer/Round/Lip profiles and overhang.
 - Boolean with a bounding-box or envelope cutter; presets; triangle/quad topology; custom line-art panel icons.
 
-[Unreleased]: https://github.com/Tooboi/FilterMakerPro/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/Tooboi/FilterMakerPro/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/Tooboi/FilterMakerPro/releases/tag/v0.6.6
 [0.6.5]: https://github.com/Tooboi/FilterMakerPro/releases/tag/v0.6.5
 [0.6.4]: https://github.com/Tooboi/FilterMakerPro/releases/tag/v0.6.4
 [0.6.3]: https://github.com/Tooboi/FilterMakerPro/releases/tag/v0.6.3
