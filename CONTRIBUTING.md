@@ -45,5 +45,6 @@ Please run the suite before opening a PR and mention the result.
 ## Releasing (maintainers)
 
 1. Update the version in `__init__.py` (`bl_info`), `blender_manifest.toml` and the panel label, and move the changelog's *Unreleased* entries under the new version.
-2. Commit, then tag: `git tag v0.6.6 && git push --tags`.
-3. The **Release** workflow checks that the versions match, builds `FilterMakerPro-0.6.6.zip` and publishes a GitHub release.
+2. Optionally write the release text in `docs/releases/v0.6.6.md` (used as the GitHub release body; otherwise the changelog section is used).
+3. Commit, then tag: `git tag v0.6.6 && git push --tags`.
+4. The **Release** workflow checks that the versions match, builds `FilterMakerPro-0.6.6.zip` and publishes a GitHub release.

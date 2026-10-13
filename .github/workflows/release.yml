@@ -43,8 +43,12 @@ jobs:
           cp __init__.py blender_manifest.toml LICENSE dist/FilterMakerPro/
           cd dist && zip -r "FilterMakerPro-${{ steps.ver.outputs.version }}.zip" FilterMakerPro
 
-      - name: Release notes from CHANGELOG
+      - name: Release notes (docs/releases/vX.Y.Z.md, else the CHANGELOG section)
         run: |
+          if [ -f "docs/releases/v${{ steps.ver.outputs.version }}.md" ]; then
+            cp "docs/releases/v${{ steps.ver.outputs.version }}.md" dist/notes.md
+            exit 0
+          fi
           awk -v v="${{ steps.ver.outputs.version }}" '
             $0 ~ "^## \\[" v "\\]" {on=1; next}
             on && /^## \[/ {exit}
