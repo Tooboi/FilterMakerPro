@@ -285,9 +285,68 @@ def t_full_featured():
                and dcoll.inputs["Collection"].default_value == p.dust_lib,
                hair=getattr(hcoll.inputs["Collection"].default_value, "name", None) if hcoll else None,
                dust=getattr(dcoll.inputs["Collection"].default_value, "name", None) if dcoll else None)
+        group.nodes["FM Debug"].outputs[0].default_value = 1.0     # per-strand attributes on
+        emitter.update_tag()
         n, kinds = count_instances(emitter)
-        record("hair + dust instances generated", n > 0, instances=n, estimate_hair=p.hair_count,
-               estimate_dust=p.dust_count)
+        dgh = bpy.context.evaluated_depsgraph_get()
+        dgh.update()
+        ev = emitter.evaluated_get(dgh)
+        ev_me = ev.to_mesh()
+        hair_verts = len(ev_me.vertices)
+        roots_attr = ev_me.attributes.get("fm_root")
+        xax_attr = ev_me.attributes.get("fm_xaxis")
+        scl_attr = ev_me.attributes.get("fm_scale")
+        hair_roots, hair_x, hair_s = {}, {}, {}
+        if roots_attr is not None:
+            import array
+            nv = len(ev_me.vertices)
+            buf = [0.0] * (3 * nv)
+            roots_attr.data.foreach_get("vector", buf)
+            xb = [0.0] * (3 * nv)
+            if xax_attr is not None:
+                xax_attr.data.foreach_get("vector", xb)
+            sb = [0.0] * (3 * nv)
+            if scl_attr is not None:
+                scl_attr.data.foreach_get("vector", sb)
+            for i in range(0, 3 * nv, 3):
+                k = (round(buf[i], 6), round(buf[i + 1], 6), round(buf[i + 2], 6))
+                if k not in hair_roots:
+                    hair_roots[k] = Vector(buf[i:i + 3])
+                    hair_x[k] = Vector(xb[i:i + 3])
+                    hair_s[k] = sb[i]
+        record("hair + dust generated", n > 0 and hair_verts > 0 and len(hair_roots) > 0,
+               dust_instances=n, hair_strands=len(hair_roots), hair_verts=hair_verts,
+               estimate_hair=p.hair_count, estimate_dust=p.dust_count)
+        # constant width: tube ring edges equal Width/2 (hexagon), whatever the length
+        def ring_share(me, w):
+            target = w * 0.5
+            good = tot = 0
+            lens = []
+            for e in me.edges:
+                d = (me.vertices[e.vertices[0]].co - me.vertices[e.vertices[1]].co).length
+                tot += 1
+                if len(lens) < 200000:
+                    lens.append(d)
+                if abs(d - target) < target * 0.02:
+                    good += 1
+            lens.sort()
+            if lens:
+                log("  hair edge lengths: target %.6f  p10 %.6f p25 %.6f p50 %.6f p75 %.6f" % (
+                    target, lens[len(lens) // 10], lens[len(lens) // 4], lens[len(lens) // 2], lens[3 * len(lens) // 4]))
+            return good / max(1, tot)
+        share1 = ring_share(ev_me, p.hair_width)
+        ev.to_mesh_clear()
+        old_len = p.hair_length
+        p.hair_length = old_len * 3.0
+        dgh.update()
+        ev = emitter.evaluated_get(dgh)
+        me2 = ev.to_mesh()
+        share2 = ring_share(me2, p.hair_width)
+        ev.to_mesh_clear()
+        p.hair_length = old_len
+        dgh.update()
+        record("hair width constant for any length", share1 > 0.15 and share2 > 0.15,
+               share_len1=round(share1, 3), share_len3x=round(share2, 3), width=p.hair_width)
         hair_names = {o.name for o in (p.hair_lib.objects if p.hair_lib else [])}
         dust_names = {o.name for o in (p.dust_lib.objects if p.dust_lib else [])}
         record("instance collections built", len(hair_names) > 0 and len(dust_names) > 0,
@@ -303,17 +362,19 @@ def t_full_featured():
                 continue
             m = inst.matrix_world
             nm = inst.object.original.name
-            if nm in hair_names:
-                hair_pts.append(m.translation.copy())
-                hair_scales.append(m.to_scale().x)
-                if len(lie) < 3000:
-                    loc, nrm, _idx, _d = bvh.find_nearest(m.translation)
-                    if loc is not None:
-                        x_axis = (m.to_3x3() @ Vector((1.0, 0.0, 0.0))).normalized()
-                        lie.append(math.degrees(math.asin(min(1.0, abs(x_axis.dot(nrm.normalized()))))))
-            elif nm in dust_names:
+            if nm in dust_names:
                 dust_pts.append(m.translation.copy())
                 dust_scales.append(m.to_scale().x)
+        mw = emitter.matrix_world
+        for k, v in hair_roots.items():
+            wv = mw @ v
+            hair_pts.append(wv)
+            hair_scales.append(hair_s[k])
+            if len(lie) < 3000 and hair_x[k].length > 0.5:
+                loc, nrm, _idx, _d = bvh.find_nearest(wv)
+                if loc is not None:
+                    x_axis = (mw.to_3x3() @ hair_x[k]).normalized()
+                    lie.append(math.degrees(math.asin(min(1.0, abs(x_axis.dot(nrm.normalized()))))))
         hk = {(round(v.x, 6), round(v.y, 6), round(v.z, 6)) for v in hair_pts}
         shared = sum(1 for v in dust_pts if (round(v.x, 6), round(v.y, 6), round(v.z, 6)) in hk)
         record("hair and dust use separate spawn points", shared == 0, hair=len(hair_pts),
@@ -426,9 +487,210 @@ def t_icons():
     log("INFO header icon ids (0 is normal without a window):", ids)
 
 
+def t_shared_library():
+    clear_scene()
+    made = []
+    for i in range(3):
+        x = i * 1.5
+        src = make_mesh("RefS%d" % i, [(x, 0, 0), (x + 1, 0, 0), (x + 1, 0, 0.6), (x, 0, 0.6)], [(0, 1, 2, 3)])
+        ob, _t = faces_filter(src)
+        p = ob.filter_maker
+        p.live = False
+        p.use_border = True
+        p.use_hair = True
+        p.use_dust = True
+        p.hair_length = 0.01 * (i + 1)          # different lengths per filter
+        p.live = True
+        fm.regenerate(ob)
+        made.append(ob)
+    root = bpy.data.collections.get(fm.LIB_ROOT)
+    kids = [c.name for c in root.children] if root else []
+    record("one hair + one dust collection for all filters", sorted(kids) == sorted([fm.HAIR_LIB_NAME, fm.DUST_LIB_NAME]),
+           collections=kids)
+    hl = {o.filter_maker.hair_lib.name if o.filter_maker.hair_lib else None for o in made}
+    dl = {o.filter_maker.dust_lib.name if o.filter_maker.dust_lib else None for o in made}
+    record("all filters reference the same pieces", len(hl) == 1 and len(dl) == 1 and None not in hl | dl,
+           hair=list(hl), dust=list(dl))
+    # emitters point at the shared collections
+    ok = True
+    for o in made:
+        g = o.filter_maker.particles_obj.modifiers.get(fm.SCATTER_MOD).node_group
+        ok &= g.nodes["FM Hair Collection"].inputs["Collection"].default_value.name == fm.HAIR_LIB_NAME
+        ok &= g.nodes["FM Dust Collection"].inputs["Collection"].default_value.name == fm.DUST_LIB_NAME
+    record("scatter nodes use the shared collections", ok)
+    # change a shared setting on filter 0 -> others follow, pieces rebuilt once
+    a, b = made[0].filter_maker, made[1].filter_maker
+    n_before = len(bpy.data.collections[fm.HAIR_LIB_NAME].objects)
+    a.hair_variants = 5
+    a.hair_curl = 1.1
+    a.dust_variants = 4
+    hc = bpy.data.collections[fm.HAIR_LIB_NAME]
+    dc = bpy.data.collections[fm.DUST_LIB_NAME]
+    record("shared settings propagate", b.hair_variants == 5 and abs(b.hair_curl - 1.1) < 1e-6
+           and b.dust_variants == 4 and len(hc.objects) == 5 and len(dc.objects) == 4,
+           b_variants=b.hair_variants, b_curl=round(b.hair_curl, 3), hair_pieces=len(hc.objects),
+           dust_pieces=len(dc.objects), before=n_before)
+    # width and material stay per filter
+    a.hair_width = 0.0004
+    record("hair width is per filter", abs(b.hair_width - 0.0004) > 1e-7 or b.hair_width != a.hair_width,
+           a=a.hair_width, b=b.hair_width)
+    # new filter adopts the shared look
+    src = make_mesh("RefS9", [(0, 3, 0), (1, 3, 0), (1, 3, 0.6), (0, 3, 0.6)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.live = False
+    p.use_hair = True
+    p.live = True
+    fm.regenerate(ob)
+    record("new filter adopts the shared pieces", p.hair_variants == 5 and abs(p.hair_curl - 1.1) < 1e-6
+           and p.hair_lib == hc and len(hc.objects) == 5, variants=p.hair_variants)
+    made.append(ob)
+    # strand profile: constant, tapering only at the tip
+    st = hc.objects[0].data.splines[0].bezier_points
+    radii = [round(bp.radius, 3) for bp in st]
+    n = len(radii)
+    body = radii[int(n * 0.25): int(n * 0.75)]
+    record("strands keep a constant profile and close to a point at both ends",
+           all(abs(r - 1.0) < 1e-6 for r in body) and radii[0] < 1e-6 and radii[-1] < 1e-6
+           and radii[1] < 1.0 and radii[-2] < 1.0, radii=radii)
+    # deleting / disabling: collections survive while used, go away when unused
+    set_active(made[0])
+    bpy.ops.filter.delete()
+    record("deleting one filter keeps the shared pieces", fm.HAIR_LIB_NAME in bpy.data.collections
+           and fm.DUST_LIB_NAME in bpy.data.collections)
+    for o in made[1:]:
+        o.filter_maker.use_hair = False
+        o.filter_maker.use_dust = False
+    record("pieces removed when no filter uses them", fm.HAIR_LIB_NAME not in bpy.data.collections
+           and fm.DUST_LIB_NAME not in bpy.data.collections and fm.LIB_ROOT not in bpy.data.collections,
+           left=[c.name for c in bpy.data.collections])
+
+
+def t_border_covers_pleats():
+    """Every pleat vertex under the frame must be inside the frame volume: every profile
+    on a flat panel, plus a box wrap and an L fold (frames bending around folds)."""
+    from mathutils.bvhtree import BVHTree
+
+    def check(label, ob, under):
+        p = ob.filter_maker
+        dg = bpy.context.evaluated_depsgraph_get()
+        dg.update()
+        fr = p.border_obj.evaluated_get(dg)
+        fme = fr.to_mesh()
+        mwf = p.border_obj.matrix_world
+        bvh = BVHTree.FromPolygons([mwf @ v.co for v in fme.vertices], [list(pl.vertices) for pl in fme.polygons])
+        fr.to_mesh_clear()
+        d = Vector((0.137, 0.981, 0.113)).normalized()
+
+        def inside(pt):
+            n = 0
+            o = pt.copy()
+            for _i in range(64):
+                hit, _n, _idx, dist = bvh.ray_cast(o, d)
+                if hit is None:
+                    break
+                n += 1
+                o = hit + d * 1e-6
+            return n % 2 == 1
+        ev = ob.evaluated_get(dg)
+        me = ev.to_mesh()
+        mw = ob.matrix_world
+        bad, checked = [], 0
+        for v in me.vertices:
+            w = mw @ v.co
+            if under(w):
+                checked += 1
+                if not inside(w):
+                    bad.append((round(w.x, 4), round(w.y, 4), round(w.z, 4)))
+        ev.to_mesh_clear()
+        record("border covers every pleat end: " + label, checked > 0 and not bad, checked=checked,
+               outside=len(bad), sample=bad[:5])
+
+    def setup(ob, prof):
+        p = ob.filter_maker
+        p.live = False
+        p.use_border = True
+        p.border_profile = prof
+        p.border_bevel = 0.02            # larger than Front Extend on purpose
+        p.border_front = 0.005
+        p.use_thickness = True
+        p.thickness = 0.002
+        p.noise_strength = 0.003
+        p.live = True
+        fm.regenerate(ob)
+        return p
+
+    for prof in ('FLAT', 'CHAMFER', 'ROUND', 'LIP'):
+        clear_scene()
+        src = make_mesh("RefB", [(0, 0, 0), (1, 0, 0), (1, 0, 0.8), (0, 0, 0.8)], [(0, 1, 2, 3)])
+        ob, _t = faces_filter(src)
+        p = setup(ob, prof)
+        W = p.border_width
+        check(prof + " panel", ob, lambda w: min(w.x, 1.0 - w.x, w.z, 0.8 - w.z) < W * 0.95)
+    for prof in ('FLAT', 'LIP'):
+        clear_scene()
+        bpy.ops.mesh.primitive_cube_add(size=1.0)
+        cube = bpy.context.active_object
+        ob, _t = faces_filter(cube, select=lambda f: abs(f.normal.z) < 0.5)
+        p = setup(ob, prof)
+        W = p.border_width
+        check(prof + " box wrap", ob, lambda w: min(w.z + 0.5, 0.5 - w.z) < W * 0.95)
+    clear_scene()
+    verts = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (1, 0, 0.7), (1, 1, 0.7)]
+    src = make_mesh("RefL", verts, [(0, 1, 2, 3), (1, 4, 5, 2)])
+    ob, _t = faces_filter(src)
+    p = setup(ob, 'FLAT')
+    W = p.border_width
+
+    def under_l(w):
+        if w.z < 0.05:                      # floor face: x 0..1, y 0..1
+            dd = min(w.x, w.y, 1.0 - w.y)
+        else:                               # wall face: z 0..0.7, y 0..1
+            dd = min(0.7 - w.z, w.y, 1.0 - w.y)
+        return dd < W * 0.95
+    check("FLAT L fold", ob, under_l)
+
+    # Curved selection with a wide frame (the case from BorderTest.blend): the outline is
+    # densely cut near the corners, which used to fold the frame's inner edge back on itself.
+    clear_scene()
+    bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius=1.0, depth=2.0)
+    cyl = bpy.context.active_object
+    ob, _t = faces_filter(cyl, select=lambda f: f.normal.y < -0.8 and abs(f.normal.z) < 0.5)
+    p = ob.filter_maker
+    p.live = False
+    p.use_border = True
+    p.border_profile = 'FLAT'
+    p.border_width = 0.109
+    p.border_front = p.border_back = 0.02
+    p.pleat_depth = 0.05
+    p.pleat_density = 27.5
+    p.noise_strength = 0.003
+    p.live = True
+    fm.regenerate(ob)
+    dg = bpy.context.evaluated_depsgraph_get()
+    dg.update()
+    bme = p.border_obj.data
+    vs = [p.border_obj.matrix_world @ v.co for v in bme.vertices]
+    m_ = 4
+    st = [vs[i:i + m_] for i in range(0, len(vs) - m_ + 1, m_)]
+    rev = 0
+    n = len(st)
+    for k in range(n):
+        a, b = st[k], st[(k + 1) % n]
+        base = b[0] - a[0]
+        seg = b[1] - a[1]
+        if base.length > 1e-9 and seg.length > 1e-9 and seg.dot(base) < 0:
+            rev += 1
+    record("frame inner edge never folds back at corners", rev == 0, stations=n, folded_segments=rev)
+    spans = sorted((s_[1] - s_[0]).length for s_ in st)
+    span = spans[len(spans) // 2]                 # median: corners are mitred (longer)
+    record("curved panel keeps the full frame width", span > 0.109, frame_width_plus_seal=round(span, 4),
+           width_setting=p.border_width)
+
 for name, fn in (("new line", t_new_line), ("plane", t_plane), ("L fold", t_lfold),
                  ("box wrap", t_box_wrap), ("full featured", t_full_featured),
-                 ("presets", t_presets), ("icons", t_icons)):
+                 ("presets", t_presets), ("icons", t_icons), ("shared library", t_shared_library),
+                 ("border coverage", t_border_covers_pleats)):
     run(name, fn)
 
 # ---------------------------------------------------------------------------

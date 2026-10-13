@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "filter_maker_pro"
-version = "0.6.5"
+version = "0.6.6"
 name = "Filter Maker Pro"
 tagline = "Pleated filters with borders, wear, hair and dust"
 maintainer = "Tooboi"
