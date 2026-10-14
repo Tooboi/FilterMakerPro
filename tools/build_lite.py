@@ -76,7 +76,7 @@ REMOVE = {"_build_media", "_build_frame", "FILTER_OT_game_ready", "FILTER_PT_gam
           "FILTER_OT_add_shape", "_shape_mesh", "_grille_island", "_grille_lines", "_grille_open",
           "_seg_dist2d", "_islands", "_outline_frames", "_tab_sides", "_plate", "build_wire_splines",
           "_curve_child", "wire_material", "_text_shape", "_auto_size_label", "print_material",
-          "build_print", "_furnace_settings", "FILTER_PT_diecut"}
+          "build_print", "_print_strip", "_furnace_settings", "FILTER_PT_diecut"}
 tree = ast.parse(src)
 lines = src.split("\n")
 spans = []

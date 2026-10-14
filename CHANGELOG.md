@@ -26,10 +26,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **Wire mesh support:** wires pleated together with the media (Diamond or Square pattern, spacing, angle, radius, front or back), built as a light curve object.
 - **Pull tabs:** one or two board tabs sticking out of the long sides of the frame.
 - **Printed graphics:** a nominal size label (for example "16 x 25 x 1", worked out automatically or typed in), an airflow text and an arrow printed on the frame sides.
+- **Printed text on the front face:** Print On *Sides*, *Front* or *Sides & Front*. The front strip sits on the top edge of the frame and reads upright, with optional Front Text of its own.
 - **White Board** frame material, a **Die-Cut Furnace** preset, and a **Die-Cut Furnace** shape (a 16 x 25 x 1 in filter with all of the above).
 - **Game-Ready panel:** one click builds a low-poly copy (low-poly pleats or a flat card), packs its UVs into 0-1, bakes Normal / AO / Base Color / Roughness from the full filter (including hair and dust) with Cycles, and can export FBX or glTF.
 
 ### Changed
+- **Piece variants are per filter.** The shared hair / dust collection holds as many pieces as the filter that asks for the most; every filter picks from the first N of them (its own Strand Shapes / Piece Variants). Curl, dust types and the dust material stay shared.
+- Game-ready objects go into a "<filter> Low" collection.
 - New filters start with the Paper media and Painted Metal frame; presets set matching materials (HEPA, Coarse Furnace, Dusty Used).
 - Faster mesh assembly for face and curve filters (numpy + `foreach_set` instead of `from_pydata` / per-vertex creation).
 

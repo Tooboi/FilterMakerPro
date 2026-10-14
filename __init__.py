@@ -2723,90 +2723,116 @@ def print_material():
     return mat
 
 
+def _print_strip(pb, origin, xdir, ydir, room, th, items, arrow_h, down):
+    """Lay text / arrow items side by side, centred on `origin`, in the plane (xdir, ydir).
+    xdir x ydir must point out of the surface so the print reads the right way round."""
+    widths, shapes = [], []
+    for kind, body in items:
+        if kind == "text":
+            vs2, fs2 = _text_shape(body)
+            shapes.append((vs2, fs2))
+            widths.append(max((v[0] for v in vs2), default=0.0) * th)
+        else:
+            shapes.append(None)
+            widths.append(1.1 * arrow_h)
+    if not widths:
+        return
+    gap = 0.6 * th
+    total = sum(widths) + gap * (len(widths) - 1)
+    scale = min(1.0, 0.8 * room / max(total, 1e-9))
+    x = -0.5 * total * scale
+    for (kind, _body), w, shp in zip(items, widths, shapes):
+        if kind == "text" and shp and shp[0]:
+            vs = [pb.verts.new(origin + xdir * (x + vx * th * scale) + ydir * ((vy - 0.5) * th * scale))
+                  for vx, vy in shp[0]]
+            for f in shp[1]:
+                try:
+                    pb.faces.new([vs[i] for i in f])
+                except ValueError:
+                    pass
+        elif kind == "arrow":
+            aw = w * scale
+            hh = arrow_h * scale
+            shaft, head, cx = 0.18 * aw, 0.5 * aw, x + 0.5 * aw
+            tip, neck, tail = down * hh, down * (hh - 0.45 * aw), -down * hh
+            poly = [(cx - shaft, tail), (cx + shaft, tail), (cx + shaft, neck), (cx + head, neck),
+                    (cx, tip), (cx - head, neck), (cx - shaft, neck)]
+            if down < 0:
+                poly.reverse()
+            vs = [pb.verts.new(origin + xdir * px + ydir * py) for px, py in poly]
+            try:
+                pb.faces.new(vs)
+            except ValueError:
+                pass
+        x += (w + gap) * scale
+
+
 def build_print(p, rb, W, O, F, B):
-    """Printed size label, airflow arrow and text on the outer sides of the frame."""
+    """Printed size label, airflow text and arrow on the outer sides of the frame and / or
+    label and text on the front face of the frame."""
     small = _rb_small(rb) or 1.0
     frames = _outline_frames(rb, max(W, 0.01 * small) * 0.05)
     if not frames:
         return None
     H = F + B
     longest = max(s[4] for s in frames)
+    place = getattr(p, "print_place", 'SIDES')
     sides = [s for s in sorted(frames, key=lambda s: -s[4]) if s[4] > 0.6 * longest and s[4] > 4.0 * H][:2]
+    if not sides and place != 'SIDES':
+        sides = [s for s in sorted(frames, key=lambda s: -s[4]) if s[4] > 0.6 * longest][:2]
     if not sides:
         return None
+    front_face = p.grille_pattern != 'NONE' and p.grille_side in {'FRONT', 'BOTH'}
     label = p.print_label.strip() or _auto_size_label(frames, O, H + (p.board_thickness if p.grille_pattern != 'NONE' else 0.0))
     flow = p.print_text.strip()
+    front_text = getattr(p, "print_front_text", "").strip()
+    down = -1.0 if p.print_flow == 'TO_BACK' else 1.0
     pb = bmesh.new()
     eps = max(2e-4, 0.002 * H)
-    th = 0.28 * H
-    for a, b, n, inw, length in sides:
+    up = Vector((0.0, 0.0, 1.0))
+    tab_sides = _tab_sides(frames, int(p.pull_tabs))
+
+    def placed(seg):
+        a, b, n, inw, length = seg
         tdir = (b - a) / length
-        tab_at = a + tdir * (length * p.tab_position)
-        out_v = -inw
-        if tdir.cross(n).dot(out_v) < 0:
-            tdir = -tdir
-            a, b = b, a
         mid = (a + b) * 0.5
         room = length
-        if p.pull_tabs > 0:
+        if any(seg is t for t in tab_sides):
             # keep the print clear of the pull tab: use the larger free part of the side
+            tab_at = a + tdir * (length * p.tab_position)
             xt = (tab_at - mid).dot(tdir)
             mid = mid - tdir * (0.25 * length * (1.0 if xt >= 0.0 else -1.0))
             room = 0.5 * length
-        origin = mid + out_v * (O + eps) + n * (0.5 * (F - B))
+        return tdir, mid, room
 
-        def put2d(verts2d, faces, x0, y0, scale):
-            vs = [pb.verts.new(origin + tdir * (x0 + x * scale) + n * (y0 + y * scale)) for x, y in verts2d]
-            for f in faces:
-                try:
-                    pb.faces.new([vs[i] for i in f])
-                except ValueError:
-                    pass
-
-        items = []
-        if label:
-            items.append(("text", label))
-        if flow:
-            items.append(("text", flow))
-        items.append(("arrow", None))
-        widths = []
-        shapes = []
-        for kind, body in items:
-            if kind == "text":
-                vs2, fs2 = _text_shape(body)
-                w = max((v[0] for v in vs2), default=0.0) * th
-                shapes.append((vs2, fs2))
-                widths.append(w)
-            else:
-                shapes.append(None)
-                widths.append(0.45 * H)
-        gap = 0.6 * th
-        total = sum(widths) + gap * (len(widths) - 1)
-        scale = min(1.0, 0.8 * room / max(total, 1e-9))
-        x = -0.5 * total * scale
-        for (kind, _body), w, shp in zip(items, widths, shapes):
-            if kind == "text" and shp and shp[0]:
-                put2d(shp[0], shp[1], x, -0.5 * th * scale, th * scale)
-            elif kind == "arrow":
-                aw = w * scale
-                hh = 0.4 * H * scale
-                down = -1.0 if p.print_flow == 'TO_BACK' else 1.0
-                shaft = 0.18 * aw
-                head = 0.5 * aw
-                cx = x + 0.5 * aw
-                tip = down * hh
-                neck = down * (hh - 0.45 * aw)
-                tail = -down * hh
-                poly = [(cx - shaft, tail), (cx + shaft, tail), (cx + shaft, neck), (cx + head, neck),
-                        (cx, tip), (cx - head, neck), (cx - shaft, neck)]
-                if down < 0:
-                    poly.reverse()
-                vs = [pb.verts.new(origin + tdir * px + n * py) for px, py in poly]
-                try:
-                    pb.faces.new(vs)
-                except ValueError:
-                    pass
-            x += (w + gap) * scale
+    if place in {'SIDES', 'BOTH'}:
+        for seg in sides:
+            _a, _b, n, inw, length = seg
+            if length <= 4.0 * H:
+                continue
+            tdir, mid, room = placed(seg)
+            out_v = -inw
+            xdir = tdir if tdir.cross(n).dot(out_v) > 0 else -tdir
+            items = [("text", t) for t in (label, flow) if t] + [("arrow", None)]
+            origin = mid + out_v * (O + eps) + n * (0.5 * (F - B))
+            _print_strip(pb, origin, xdir, n, room, 0.28 * H, items, 0.4 * H, down)
+    if place in {'FRONT', 'BOTH'}:
+        # one strip on the frame band, on the top edge when there is one, reading upright
+        top = max(frames, key=lambda s: (-s[3]).dot(up))
+        seg = top if (-top[3]).dot(up) > 0.5 and top[4] > 0.3 * longest else sides[0]
+        _a, _b, n, inw, length = seg
+        tdir, mid, room = placed(seg)
+        out_v = -inw
+        if abs(out_v.dot(up)) > 0.5:
+            ydir = out_v if out_v.dot(up) > 0 else -out_v
+            xdir = ydir.cross(n)
+        else:
+            xdir = tdir if tdir.dot(up) >= 0 else -tdir
+            ydir = n.cross(xdir)
+        items = [("text", t) for t in ((front_text,) if front_text else (label, flow)) if t]
+        h = F + (p.board_thickness if front_face else 0.0) + eps
+        origin = mid + inw * (0.5 * (W - O)) + n * h
+        _print_strip(pb, origin, xdir, ydir, room, 0.45 * (W + O), items, 0.0, down)
     if not pb.faces:
         pb.free()
         return None
@@ -3487,27 +3513,36 @@ def _remove_lib(p, attr):
     _drop_coll_if_unused(coll, exclude=p)
 
 
+def _lib_variants(kind, p):
+    """Pieces in the shared collection: the most any filter using it asks for. Each filter
+    picks from the first N of them (its own setting); the pieces are generated in a fixed
+    order, so the first N are the same whatever the total."""
+    attr, use = ("hair_variants", "use_hair") if kind == 'hair' else ("dust_variants", "use_dust")
+    n = int(getattr(p, attr))
+    for ob in _all_filters():
+        fp = ob.filter_maker
+        if getattr(fp, use):
+            n = max(n, int(getattr(fp, attr)))
+    return n
+
+
 def _hair_params(p):
-    return {"curl": round(float(p.hair_curl), 4), "variants": int(p.hair_variants), "v": 2}
+    return {"curl": round(float(p.hair_curl), 4), "variants": _lib_variants('hair', p), "v": 2}
 
 
 def _dust_params(p):
-    return {"types": sorted(p.dust_types), "variants": int(p.dust_variants),
-            "mat": p.dust_material.name if p.dust_material else ""}
+    return {"types": sorted(p.dust_types), "variants": _lib_variants('dust', p),
+            "mat": p.dust_material.name if p.dust_material else "", "v": 2}
 
 
 def _apply_hair_params(fp, prm):
     if abs(fp.hair_curl - prm["curl"]) > 1e-6:
         fp.hair_curl = prm["curl"]
-    if fp.hair_variants != prm["variants"]:
-        fp.hair_variants = prm["variants"]
 
 
 def _apply_dust_params(fp, prm):
     if sorted(fp.dust_types) != prm["types"]:
         fp.dust_types = set(prm["types"])
-    if fp.dust_variants != prm["variants"]:
-        fp.dust_variants = prm["variants"]
     mat = bpy.data.materials.get(prm["mat"]) if prm["mat"] else None
     if fp.dust_material != mat:
         fp.dust_material = mat
@@ -3675,7 +3710,7 @@ def _build_dust_lib(coll, prm):
     mat = bpy.data.materials.get(prm["mat"]) if prm["mat"] else None
     for i in range(max(1, int(prm["variants"]))):
         kind = kinds[i % len(kinds)]
-        name = "FM Dust %s %02d" % (kind.title(), i + 1)
+        name = "FM Dust %02d %s" % (i + 1, kind.title())     # sorts in build order
         data = _lint_curve(rng, name) if kind == 'LINT' else _dust_mesh_piece(rng, kind, name)
         if mat is not None:
             data.materials.append(mat)
@@ -3715,7 +3750,16 @@ def _sync_lib(obj, p, kind):
                 if fp.as_pointer() != p.as_pointer():
                     apply_to(fp, prm)
         else:
-            apply_to(p, json.loads(stored))
+            st = json.loads(stored)
+            apply_to(p, st)
+            need = params_of(p)["variants"]
+            if need > int(st.get("variants", 0)):
+                # this filter wants more pieces than the shared set has: extend the set
+                # (same look, the existing pieces stay the same)
+                st["variants"] = need
+                _clear_collection(coll)
+                builder(coll, st)
+                coll["fm_params"] = json.dumps(st, sort_keys=True)
         if old != coll:
             setattr(p, attr, coll)
     finally:
@@ -3790,7 +3834,7 @@ def _remove_psys(emitter, name):
 # (which Blender 5.x no longer accepts from Python as item assignment).
 # ---------------------------------------------------------------------------
 
-SCATTER_VERSION = 11
+SCATTER_VERSION = 12
 SCATTER_MOD = "Filter Maker Scatter"
 SCATTER_PREFIX = "FilterMaker Scatter "
 DUST_SEED_OFFSET = 7919                    # hair and dust never share spawn points
@@ -3815,6 +3859,8 @@ SCATTER_VALUES = (
     ("Hair Falloff", 'FLOAT', 0.05),
     ("Dust Falloff", 'FLOAT', 0.05),
     ("Hair Width", 'FLOAT', 0.0005),
+    ("Hair Variant Max", 'INT', 1000000),   # pick from the first N pieces only (N - 1)
+    ("Dust Variant Max", 'INT', 1000000),
     ("Debug", 'FLOAT', 0.0),          # 1 = store per-strand attributes (used by the tests)
 )
 HAIR_SAMPLES = 24                     # points per strand after resampling
@@ -4036,7 +4082,7 @@ def _build_scatter(group, ctx):
                                  math_node('SUBTRACT', 600, y - 860, 1.0, var),
                                  math_node('ADD', 600, y - 960, 1.0, var), seed, 4)
         scale = math_node('MULTIPLY', 1000, y - 900, size_rand, val[kind + " Size"])
-        index = random_value('INT', 1000, y - 1100, 0, 1000000, seed, 5)
+        index = random_value('INT', 1000, y - 1100, 0, val[kind + " Variant Max"], seed, 5)
 
         coll = N('GeometryNodeCollectionInfo', 1000, y + 250)
         coll.name = coll.label = "FM %s Collection" % kind
@@ -4199,6 +4245,8 @@ def sync_scatter(emitter, p, hair_coll, dust_coll):
         "Hair Falloff": float(max(0.0, p.hair_border_falloff)),
         "Hair Width": float(max(p.hair_width, 1e-7)),
         "Dust Falloff": float(max(0.0, p.dust_border_falloff)),
+        "Hair Variant Max": max(0, min(int(p.hair_variants), len(hair_coll.objects) if hair_coll else 1) - 1),
+        "Dust Variant Max": max(0, min(int(p.dust_variants), len(dust_coll.objects) if dust_coll else 1) - 1),
     }
     nodes = group.nodes
     for name, value in values.items():
@@ -5155,6 +5203,12 @@ class FilterProps(PropertyGroup):
                                 description="Text of the size label (empty: nominal size in inches)")
     print_text: StringProperty(name="Text", default="AIR FLOW", update=_upd,
                                description="Text printed next to the airflow arrow")
+    print_place: EnumProperty(name="Print On", items=[
+        ('SIDES', "Sides", "Label, text and airflow arrow on the outer sides of the frame"),
+        ('FRONT', "Front", "Label and text on the front face of the frame"),
+        ('BOTH', "Sides & Front", "Print on the sides and on the front face")], default='SIDES', update=_upd)
+    print_front_text: StringProperty(name="Front Text", default="", update=_upd,
+                                     description="Text on the front face (empty: the size label and text)")
     print_flow: EnumProperty(name="Airflow", items=[
         ('TO_BACK', "Front to Back", "The arrow points from the front to the back"),
         ('TO_FRONT', "Back to Front", "The arrow points from the back to the front")], default='TO_BACK',
@@ -5176,7 +5230,8 @@ class FilterProps(PropertyGroup):
                              subtype='ANGLE', unit='ROTATION', update=_upd_scatter,
                              description="Strands lie on the filter; this is the most they lift off it")
     hair_variants: IntProperty(name="Strand Shapes", default=8, min=1, max=32, update=_upd_shared_hair,
-                               description="Number of different strand curves in the shared hair collection")
+                               description="Strand shapes this filter uses. The shared collection holds the most "
+                                           "any filter asks for; this filter picks from the first ones")
     hair_seed: IntProperty(name="Seed", default=0, min=0, update=_upd_scatter,
                            description="Placement of the strands on this filter")
 
@@ -5194,7 +5249,8 @@ class FilterProps(PropertyGroup):
                              default={'FLAKE', 'CLUMP', 'GRIT', 'LINT'}, update=_upd_shared_dust,
                              description="Which kinds of dust pieces are in the shared dust collection")
     dust_variants: IntProperty(name="Piece Variants", default=10, min=1, max=32, update=_upd_shared_dust,
-                               description="Number of different pieces in the shared dust collection")
+                               description="Dust pieces this filter uses. The shared collection holds the most "
+                                           "any filter asks for; this filter picks from the first ones")
 
     # Shared particle emitter
     hair_border_falloff: _len("Border Falloff", 0.05, "Distance over which hair fades in after the "
@@ -5323,7 +5379,7 @@ DEFAULTS_NORM = {
     "use_wire": False, "wire_pattern": "DIAMOND", "wire_spacing": 0.03, "wire_angle": math.radians(50.0),
     "wire_radius": 0.0006, "wire_side": "FRONT",
     "pull_tabs": 0, "tab_width": 0.04, "tab_length": 0.02, "tab_position": 0.5,
-    "use_print": False, "print_flow": "TO_BACK",
+    "use_print": False, "print_flow": "TO_BACK", "print_place": "SIDES",
 }
 PRESET_KEYS = tuple(DEFAULTS_NORM)
 
@@ -5921,7 +5977,7 @@ class FILTER_OT_game_ready(Operator):
         scene = context.scene
         state = dict(engine=scene.render.engine, active=context.view_layer.objects.active,
                      selected=[o for o in context.selected_objects])
-        coll = _game_collection("%s Game" % ob.name)
+        coll = _game_collection("%s Low" % ob.name)
         made_high = []
         try:
             low = self._build_low(ob, p, coll)
@@ -6808,7 +6864,13 @@ class FILTER_PT_diecut(FILTER_SubPanel, Panel):
             sub.prop(p, "print_label", placeholder="Auto (nominal inches)")
         except TypeError:
             sub.prop(p, "print_label")
+        sub.prop(p, "print_place")
         sub.prop(p, "print_text")
+        if p.print_place != 'SIDES':
+            try:
+                sub.prop(p, "print_front_text", placeholder="Size label + text")
+            except TypeError:
+                sub.prop(p, "print_front_text")
         sub.prop(p, "print_flow")
 
 
@@ -6833,13 +6895,15 @@ class FILTER_PT_hair(FILTER_SubPanel, Panel):
             return
         self.layout.active = p.use_hair
         c = self.layout.column(align=True)
-        for prop in ("hair_density", "hair_length", "hair_length_var", "hair_width", "hair_lift", "hair_seed"):
+        for prop in ("hair_density", "hair_length", "hair_length_var", "hair_width", "hair_lift", "hair_seed",
+                     "hair_variants"):
             c.prop(p, prop)
         box = self.layout.box()
         box.label(text="Strand shape (shared by all filters)", icon=ic('LINKED'))
         sc = box.column(align=True)
-        for prop in ("hair_curl", "hair_variants"):
-            sc.prop(p, prop)
+        sc.prop(p, "hair_curl")
+        if p.hair_lib is not None:
+            sc.label(text="Shared set: %d strands" % len(p.hair_lib.objects))
         _particle_footer(self.layout, p, p.hair_lib, p.hair_count, "strands", "hair")
 
 
@@ -6864,11 +6928,12 @@ class FILTER_PT_dust(FILTER_SubPanel, Panel):
             return
         self.layout.active = p.use_dust
         c = self.layout.column(align=True)
-        for prop in ("dust_density", "dust_size", "dust_size_var", "dust_tilt", "dust_seed"):
+        for prop in ("dust_density", "dust_size", "dust_size_var", "dust_tilt", "dust_seed", "dust_variants"):
             c.prop(p, prop)
         box = self.layout.box()
         box.label(text="Dust pieces (shared by all filters)", icon=ic('LINKED'))
-        box.prop(p, "dust_variants")
+        if p.dust_lib is not None:
+            box.label(text="Shared set: %d pieces" % len(p.dust_lib.objects))
         row = box.row(align=True)
         row.prop(p, "dust_types", expand=True)
         _particle_footer(self.layout, p, p.dust_lib, p.dust_count, "pieces", "dust")

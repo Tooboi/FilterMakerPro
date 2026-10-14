@@ -518,18 +518,30 @@ def t_shared_library():
         ok &= g.nodes["FM Hair Collection"].inputs["Collection"].default_value.name == fm.HAIR_LIB_NAME
         ok &= g.nodes["FM Dust Collection"].inputs["Collection"].default_value.name == fm.DUST_LIB_NAME
     record("scatter nodes use the shared collections", ok)
-    # change a shared setting on filter 0 -> others follow, pieces rebuilt once
+    # curl is shared; the number of pieces is per filter, the shared set holds the most
     a, b = made[0].filter_maker, made[1].filter_maker
     n_before = len(bpy.data.collections[fm.HAIR_LIB_NAME].objects)
-    a.hair_variants = 5
+    first = [o.name for o in bpy.data.collections[fm.HAIR_LIB_NAME].objects]
+    a.hair_variants = 12
     a.hair_curl = 1.1
     a.dust_variants = 4
     hc = bpy.data.collections[fm.HAIR_LIB_NAME]
     dc = bpy.data.collections[fm.DUST_LIB_NAME]
-    record("shared settings propagate", b.hair_variants == 5 and abs(b.hair_curl - 1.1) < 1e-6
-           and b.dust_variants == 4 and len(hc.objects) == 5 and len(dc.objects) == 4,
-           b_variants=b.hair_variants, b_curl=round(b.hair_curl, 3), hair_pieces=len(hc.objects),
-           dust_pieces=len(dc.objects), before=n_before)
+
+    def vmax(fp, kind):
+        g = fp.particles_obj.modifiers.get(fm.SCATTER_MOD).node_group
+        return g.nodes["FM %s Variant Max" % kind].integer
+    record("shared curl propagates", abs(b.hair_curl - 1.1) < 1e-6, b_curl=round(b.hair_curl, 3))
+    record("piece variants: shared set holds the most any filter asks for",
+           len(hc.objects) == 12 and b.hair_variants == 8 and len(dc.objects) == 10 and b.dust_variants == 10,
+           hair_pieces=len(hc.objects), dust_pieces=len(dc.objects), b_hair=b.hair_variants,
+           b_dust=b.dust_variants, before=n_before)
+    record("piece variants: each filter picks from its own first N",
+           vmax(a, "Hair") == 11 and vmax(b, "Hair") == 7 and vmax(a, "Dust") == 3 and vmax(b, "Dust") == 9,
+           a_hair=vmax(a, "Hair"), b_hair=vmax(b, "Hair"), a_dust=vmax(a, "Dust"), b_dust=vmax(b, "Dust"))
+    names = [o.name for o in hc.objects]
+    record("piece variants: growing the set keeps the first pieces", names[:len(first)] == first,
+           first=first[:3], now=names[:3])
     # width and material stay per filter
     a.hair_width = 0.0004
     record("hair width is per filter", abs(b.hair_width - 0.0004) > 1e-7 or b.hair_width != a.hair_width,
@@ -542,8 +554,8 @@ def t_shared_library():
     p.use_hair = True
     p.live = True
     fm.regenerate(ob)
-    record("new filter adopts the shared pieces", p.hair_variants == 5 and abs(p.hair_curl - 1.1) < 1e-6
-           and p.hair_lib == hc and len(hc.objects) == 5, variants=p.hair_variants)
+    record("new filter adopts the shared pieces", p.hair_variants == 8 and abs(p.hair_curl - 1.1) < 1e-6
+           and p.hair_lib == hc and len(hc.objects) == 12, variants=p.hair_variants, pieces=len(hc.objects))
     made.append(ob)
     # strand profile: constant, tapering only at the tip
     st = hc.objects[0].data.splines[0].bezier_points
@@ -967,6 +979,17 @@ def t_diecut():
     nf = len(po.data.polygons) if po else 0
     record("printed label, airflow text and arrow", po is not None and nf > 40 and label == "16 x 25 x 1",
            faces=nf, label=label)
+    p.print_place = 'FRONT'
+    po = p.print_obj
+    vs = [po.matrix_world @ v.co for v in po.data.vertices] if po else []
+    on_front = [v for v in vs if abs(v.x) < w / 2 and abs(v.y) > 0.5 * F]
+    record("printed text on the front face", po is not None and vs and len(on_front) == len(vs)
+           and max(v.z for v in vs) > h - p.border_width - 0.005,
+           verts=len(vs), on_front=len(on_front), top=round(max(v.z for v in vs), 4) if vs else None)
+    p.print_place = 'BOTH'
+    nb = len(p.print_obj.data.polygons) if p.print_obj else 0
+    record("printed on the sides and the front", nb > nf, faces=nb, sides_only=nf)
+    po = p.print_obj
     render_material("12_diecut_furnace", [ob, fr] + [o for o in (wo, po) if o])
     render("12_diecut_closeup", [ob, fr] + [o for o in (wo, po) if o], direction=(0.5, -1.4, 0.35), close=0.35)
     render("12_diecut_side_print", [ob, fr] + [o for o in (po,) if o], direction=(1.6, -0.25, 0.1), close=0.55)
@@ -1063,6 +1086,10 @@ def t_game_ready():
         if lod == 'FLAT' and low is not None:
             render("11_game_ready_flat", [low], direction=(0.6, -1.5, 0.4))
     record("game-ready export written", os.path.exists(p.game_path), path=p.game_path)
+    record("game-ready objects go into the '<filter> Low' collection",
+           bpy.data.collections.get(ob.name + " Low") is not None
+           and bpy.data.collections.get(ob.name + " Game") is None,
+           collections=[c.name for c in bpy.data.collections])
 
 
 for name, fn in (("new line", t_new_line), ("plane", t_plane), ("L fold", t_lfold),
