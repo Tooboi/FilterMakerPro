@@ -6,7 +6,8 @@ Lite keeps: every source (new line, curve, edges, faces), pleat shaping, bevel,
 shading, topology and a flat border (width only). Pro-only code is replaced by
 small stubs, so it is not in the Lite file at all (and Lite never advertises Pro):
   wear (Clouds displace), hair & dust, border profiles / overhang / front-back,
-  boolean cutter and presets.
+  die-cut face / wire / print, materials, game-ready and presets.
+Lite keeps the Boolean tool (cutting the source shape), which is needed for clean results.
 Lite uses the same scene data as Pro, so a file made with Lite opens in Pro with
 all its settings. Only one edition can be enabled at a time.
 """
@@ -51,8 +52,6 @@ STUBS = {
                          "p.hair_count = p.dust_count = 0"),
     "refresh_scatter": "return",
     "sync_scatter": "return None",
-    "sync_boolean": "return",
-    "build_cutter": "raise RuntimeError(%r)" % PRO_ONLY,
     "_build_scatter": "raise RuntimeError(%r)" % PRO_ONLY,
     "_hair_tubes": "raise RuntimeError(%r)" % PRO_ONLY,
     "_scatter_group": "raise RuntimeError(%r)" % PRO_ONLY,
@@ -105,7 +104,7 @@ for start, end, name in sorted(spans, reverse=True):
 src = "\n".join(lines)
 
 # ---- Pro settings are switched off whenever Lite rebuilds a filter ------------
-rep('''def regenerate(obj):''', '''_LITE_OFF = (("use_hair", False), ("use_dust", False), ("use_boolean", False),
+rep('''def regenerate(obj):''', '''_LITE_OFF = (("use_hair", False), ("use_dust", False),
              ("noise_strength", 0.0), ("border_profile", 'FLAT'), ("border_overhang", 0.0),
              ("border_caps", 'NONE'), ("filter_style", 'CUSTOM'), ("frame_style", 'CUSTOM'),
              ("dirt", 0.0), ("grille_pattern", 'NONE'), ("use_wire", False), ("pull_tabs", 0),
@@ -113,8 +112,8 @@ rep('''def regenerate(obj):''', '''_LITE_OFF = (("use_hair", False), ("use_dust"
 
 
 def _lite_gate(p):
-    """Lite: turn off Pro-only settings (a filter made in Pro keeps its pleats and
-    border, without wear, hair, dust, border styles or boolean)."""
+    """Lite: turn off Pro-only settings (a filter made in Pro keeps its pleats, border
+    and boolean, without wear, hair, dust or border styles)."""
     prev = _busy[0]
     _busy[0] = True
     try:
@@ -192,10 +191,10 @@ def _teardown():''')
 # classes: drop Pro panels / operators, add the upsell panel
 m = re.search(r"classes = \((.*?)\)\n", src, re.S)
 names = [n.strip() for n in m.group(1).replace("\n", " ").split(",") if n.strip()]
-drop = {"FILTER_PT_presets", "FILTER_PT_wear", "FILTER_PT_hair", "FILTER_PT_dust", "FILTER_PT_boolean",
+drop = {"FILTER_PT_presets", "FILTER_PT_wear", "FILTER_PT_hair", "FILTER_PT_dust",
         "FILTER_PT_game", "FILTER_OT_game_ready", "FILTER_OT_add_shape", "FILTER_PT_diecut",
         "FILTER_OT_preset_apply", "FILTER_OT_preset_save", "FILTER_OT_preset_update",
-        "FILTER_OT_preset_delete", "FILTER_OT_randomize", "FILTER_OT_use_reference"}
+        "FILTER_OT_preset_delete", "FILTER_OT_randomize"}
 unknown = drop - set(names)
 if unknown:
     raise SystemExit("build_lite: classes not found: %s" % ", ".join(sorted(unknown)))
