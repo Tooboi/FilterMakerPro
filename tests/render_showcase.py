@@ -751,10 +751,10 @@ def shot_boolean():
     hm = bpy.data.materials.new("FMHousing")
     principled(hm, (0.05, 0.055, 0.06, 1.0), 0.45)
     housing.data.materials.append(hm)
-    ob = faces_filter(housing, select=lambda f: f.normal.z > 0.5 and f.calc_area() < inner_area * 1.05)
+    ob = faces_filter(housing, select=lambda f: f.normal.z > 0.5 and f.calc_area() > inner_area * 0.9)
     configure(ob, pleat_density=60.0, pleat_depth=0.02, noise_strength=0.0, use_border=True,
               border_width=0.025, border_front=0.004, border_back=0.03, use_boolean=True,
-              boolean_source='ENVELOPE', boolean_op='DIFFERENCE', cutter_margin=0.002)
+              boolean_source='ENVELOPE', boolean_op='DIFFERENCE', cutter_margin=0.012)
     style_materials(ob.filter_maker, media='PAPER', frame_style='PAINTED')
     housing.hide_render = False
     try:

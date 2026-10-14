@@ -5991,7 +5991,18 @@ class FILTER_OT_game_ready(Operator):
                     srcs.append(p.particles_obj)
                 for s in srcs:
                     made_high.append(_realized_copy(s, s.name + "_high", high_coll, dg))
-                images = self._bake(context, ob, p, low, made_high, maps)
+                # the originals sit exactly on their baking copies: hide them from the bake,
+                # or every ray (AO above all) is blocked by the duplicate surface
+                hidden = []
+                for s in [ob] + [c for c in ob.children if c.type in {'MESH', 'CURVE'}]:
+                    if not s.hide_render:
+                        s.hide_render = True
+                        hidden.append(s)
+                try:
+                    images = self._bake(context, ob, p, low, made_high, maps)
+                finally:
+                    for s in hidden:
+                        s.hide_render = False
             self._finish_material(ob, low, images)
             path = self._export(context, ob, p, low)
             tris = sum(len(pl.vertices) - 2 for pl in low.data.polygons)
