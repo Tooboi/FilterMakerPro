@@ -14,7 +14,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 - Minimum Blender version set to 4.2 (`bl_info` and manifest).
 
+## [0.7.0] (in testing)
+
+### Added
+- **UVs on everything.** The pleated sheet is unrolled flat across the folds, so textures keep their proportions on flanks and bevels (no stretching); the frame and end caps get matching UVs. **Real-World Size** tiles textures at a fixed size on every filter (Texture Size), **Fit 0-1** scales each part into the UV square.
+- **Built-in materials.** Media: Paper, Synthetic, HEPA, Fibreglass, Carbon. Frame: Painted Metal, Galvanised, Aluminium, Cardboard, Plastic, Rubber. All procedural and texture-free, driven by the new UVs.
+- **Dirt.** One slider builds a dirt mask that is heaviest in the middle and in the folds and clean under the frame (mesh attributes `fm_dirt` and `fm_edge`, usable in your own shaders too).
+- **Add Filter Shape:** Panel, Round Panel, Cartridge (with end caps), V-Bank and Box Wrap at the 3D cursor.
+- **End caps** for ring-shaped filters (cartridges, box wraps), with an optional centre hole.
+- **Die-cut face** (Face, Wire & Print panel): a board sheet over the front, back or both sides of the frame with **Diamond** or **Square** openings. Set openings across, opening shape, strut width, corner cut and board thickness. It works on flat panels and also on curved filters, folded filters and rings (cartridge liners, box wraps).
+- **Wire mesh support:** wires pleated together with the media (Diamond or Square pattern, spacing, angle, radius, front or back), built as a light curve object.
+- **Pull tabs:** one or two board tabs sticking out of the long sides of the frame.
+- **Printed graphics:** a nominal size label (for example "16 x 25 x 1", worked out automatically or typed in), an airflow text and an arrow printed on the frame sides.
+- **Printed text on the front face:** Print On *Sides*, *Front* or *Sides & Front*. The front strip sits on the top edge of the frame and reads upright, with optional Front Text of its own.
+- **White Board** frame material, a **Die-Cut Furnace** preset, and a **Die-Cut Furnace** shape (a 16 x 25 x 1 in filter with all of the above).
+- **Game-Ready panel:** one click builds a low-poly copy (low-poly pleats or a flat card), packs its UVs into 0-1, bakes Normal / AO / Base Color / Roughness from the full filter (including hair and dust) with Cycles, and can export FBX or glTF.
+
+### Changed
+- **Piece variants are per filter.** The shared hair / dust collection holds as many pieces as the filter that asks for the most; every filter picks from the first N of them (its own Strand Shapes / Piece Variants). Curl, dust types and the dust material stay shared.
+- Game-ready objects go into a "<filter> Low" collection.
+- New filters start with the Paper media and Painted Metal frame; presets set matching materials (HEPA, Coarse Furnace, Dusty Used).
+- Faster mesh assembly for face and curve filters (numpy + `foreach_set` instead of `from_pydata` / per-vertex creation).
+
 ## [0.6.6]
+
+### Added
+- `tools/build_lite.py` builds **Filter Maker Lite**, the free edition (all sources, pleat shaping, flat border). Lite saves the same data, so its filters open in Pro unchanged.
+- Pro and Lite refuse to be enabled at the same time, with a clear message.
 
 ### Changed
 - **One shared hair collection and one shared dust collection** for every filter in the file ("FM Hair Strands", "FM Dust Pieces"). New filters reuse them instead of adding their own copies; old per-filter collections are cleaned up automatically.

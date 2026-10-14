@@ -223,3 +223,4 @@ __marimo__/
 tests/results/
 dist/
 *.blend1
+tests/FilterMakerLite/

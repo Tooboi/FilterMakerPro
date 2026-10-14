@@ -23,12 +23,13 @@
 </p>
 
 <p align="center">
-  <b>Pleated air filters from a line, a curve, mesh edges or faces, with borders, wear, hair and dust, all set from the N-panel.</b><br>
-  No node setup, no modifiers to wire up. Pick a source, drag sliders, finish.
+  <b>Pleated air filters from a line, a curve, mesh edges or faces: die-cut faces, wire mesh, built-in materials, hair &amp; dust and game-ready bakes, all set from the N-panel.</b><br>
+  No node setup, no modifiers to wire up. Pick a source or a ready-made shape, drag sliders, finish.
 </p>
 
 <p align="center">
   <a href="#-features">Features</a> ·
+  <a href="#-gallery">Gallery</a> ·
   <a href="#-installation">Install</a> ·
   <a href="#-quick-start">Quick start</a> ·
   <a href="#-panel-reference">Panel reference</a> ·
@@ -45,8 +46,8 @@
   <tr>
     <td width="33%" valign="top">
       <img src="docs/images/icons/pleats.svg" width="44" alt=""><br>
-      <b>Any source shape</b><br>
-      Start from a new line, any curve (open or closed), selected mesh edges, or selected faces. Neighbouring faces become <i>one continuous pleated sheet</i> that runs around corners.
+      <b>Any source, or a ready-made shape</b><br>
+      Start from a new line, any curve, mesh edges or faces, or pick <b>Add Filter Shape</b>: Panel, Round Panel, Cartridge, V-Bank, Box Wrap or a 16 x 25 x 1 in <b>Die-Cut Furnace</b> filter.
     </td>
     <td width="33%" valign="top">
       <img src="docs/images/icons/bevel.svg" width="44" alt=""><br>
@@ -55,47 +56,80 @@
     </td>
     <td width="33%" valign="top">
       <img src="docs/images/icons/main.svg" width="44" alt=""><br>
-      <b>Clean quad topology</b><br>
-      Face filters are remeshed on a structured grid: 99.8–100% quads, welded seams and smooth normals across panel joins. Triangles are one click away.
+      <b>Clean topology, real UVs</b><br>
+      A structured quad grid with welded seams, and UVs unrolled across the folds: textures keep their size on every flank, frame and cap (Real-World Size or Fit 0-1).
     </td>
   </tr>
   <tr>
     <td valign="top">
       <img src="docs/images/icons/border.svg" width="44" alt=""><br>
-      <b>Borders that fit</b><br>
-      Flat, Chamfer, Round or Lip frames with inward width, outward overhang and front/back extend. Pleat ends are sealed inside the frame, so nothing clips through.
+      <b>Borders, faces and caps</b><br>
+      Flat, Chamfer, Round or Lip frames; end caps for cartridges; a <b>die-cut board face</b> with diamond or square openings; pull tabs. Pleat ends never clip through.
     </td>
     <td valign="top">
-      <img src="docs/images/icons/wear.svg" width="44" alt=""><br>
-      <b>Wear (Clouds displace)</b><br>
-      The familiar Clouds texture settings (basis, size, depth, soft/hard) displace the surface for a used look. The wear fades out under the border.
+      <img src="docs/images/icons/materials.svg" width="44" alt=""><br>
+      <b>Built-in materials &amp; dirt</b><br>
+      Paper, Synthetic, HEPA, Fibreglass, Carbon media and seven frame materials, all procedural. One <b>Dirt</b> slider dirties the middle and the folds and keeps the frame edge clean.
     </td>
     <td valign="top">
       <img src="docs/images/icons/hair.svg" width="44" alt=""><br>
-      <b>Hair &amp; dust</b><br>
-      A Geometry Nodes scatter turns generated strand curves into hairs of constant width that close to a point at both ends, and scatters dust pieces (flakes, clumps, grit, lint). Every filter shares one hair and one dust collection. Hair lies mostly flat, the two kinds never share spawn points, and both fade out near the border.
+      <b>Wire, print, hair &amp; dust</b><br>
+      Wire mesh pleated with the media, printed size labels and airflow arrows, and a Geometry Nodes scatter of hair and dust that every filter shares.
     </td>
   </tr>
   <tr>
     <td valign="top">
+      <img src="docs/images/icons/finish.svg" width="44" alt=""><br>
+      <b>Game-ready in one click</b><br>
+      A low-poly copy (pleated or a flat card), UVs packed into 0-1, Normal / AO / Color / Roughness baked from the full filter, and FBX or glTF export.
+    </td>
+    <td valign="top">
       <img src="docs/images/icons/boolean.svg" width="44" alt=""><br>
       <b>Boolean cutter</b><br>
-      Cut the source mesh with a bounding box, an envelope of the pleated form, or any object. It is applied when you finish.
+      Cut the source mesh with a box, an envelope of the pleated form or any object, so the filter sits in its housing. Applied when you finish.
     </td>
     <td valign="top">
       <img src="docs/images/icons/presets.svg" width="44" alt=""><br>
-      <b>Presets</b><br>
-      Six built-in looks, from <i>HEPA Fine Pleat</i> to <i>Dusty Used</i>. Save your own; presets scale with the size of the source.
-    </td>
-    <td valign="top">
-      <img src="docs/images/icons/finish.svg" width="44" alt=""><br>
-      <b>Live and fast</b><br>
-      Edits regenerate as you drag. Hair and dust sliders update in about 60 ms without rebuilding the filter, and the pleated sheet is cached between edits.
+      <b>Presets, live and fast</b><br>
+      Seven built-in looks and your own. Edits regenerate as you drag; hair, dust and wear sliders update in under 150 ms.
     </td>
   </tr>
 </table>
 
-### Gallery
+## 🖼 Gallery
+
+<p align="center"><img src="docs/images/shapes.png" alt="The six Add Filter Shape presets: panel, round panel, cartridge, V-bank, box wrap and die-cut furnace filter" width="100%"></p>
+<p align="center"><sub><b>Add Filter Shape.</b> Panel, Round Panel, Cartridge, V-Bank, Box Wrap and Die-Cut Furnace, each one click at the 3D cursor.</sub></p>
+
+### Die-cut faces, wire mesh and print
+
+<table>
+  <tr>
+    <td width="42%"><img src="docs/images/furnace_front.png" alt="A 16 x 25 x 1 furnace filter with a white die-cut board face, wire mesh and a printed label"></td>
+    <td width="58%"><img src="docs/images/furnace_macro.png" alt="Close-up of the diamond openings with the wire mesh pleated into the media"><br><br>
+    <img src="docs/images/furnace_print.png" alt="The frame side with the printed size label, airflow text and arrow"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Die-Cut Furnace.</b> Board face on both sides, a pull tab and a front label</sub></td>
+    <td align="center"><sub>Wire pleated with the media · size label and airflow arrow on the frame side</sub></td>
+  </tr>
+</table>
+
+<p align="center"><img src="docs/images/faces.png" alt="Die-cut faces on a furnace filter, a panel with square openings, a cartridge liner and a box wrap" width="100%"></p>
+<p align="center"><sub>Diamond or square openings work on flat panels, cartridges and box wraps; the wire can run diagonally or square.</sub></p>
+
+### Built-in materials and dirt
+
+<p align="center"><img src="docs/images/materials.png" alt="Paper, synthetic, HEPA, fibreglass and carbon media in painted, aluminium, plastic, cardboard and galvanised frames" width="100%"></p>
+<p align="center"><img src="docs/images/dirt.png" alt="The same filter with Dirt at 0, 0.45 and 0.95" width="100%"></p>
+<p align="center"><sub>Media: Paper, Synthetic, HEPA, Fibreglass, Carbon. Frames: Painted, Galvanised, Aluminium, Cardboard, White Board, Plastic, Rubber. <b>Dirt</b> at 0, 0.45 and 0.95.</sub></p>
+
+### Game-ready
+
+<p align="center"><img src="docs/images/game_ready.png" alt="The full furnace filter next to its baked low-poly flat card" width="100%"></p>
+<p align="center"><sub>Left: the full filter. Right: the low-poly flat card with baked Normal, AO and Base Color maps, ready for FBX / glTF.</sub></p>
+
+### More
 
 <table>
   <tr>
@@ -107,12 +141,20 @@
     <td align="center"><sub><b>Face mode.</b> Four box sides, one continuous sheet</sub></td>
   </tr>
   <tr>
-    <td><img src="docs/images/topology.png" alt="Wireframe showing the clean quad grid across an L-shaped fold"></td>
+    <td><img src="docs/images/hero_dusty.png" alt="A used filter with a galvanised lip frame, wear, hair and dust"></td>
     <td><img src="docs/images/macro.png" alt="Macro close-up of hair strands and dust on the pleats"></td>
   </tr>
   <tr>
-    <td align="center"><sub><b>Topology.</b> A structured quad grid that follows the fold</sub></td>
+    <td align="center"><sub><b>Dusty Used.</b> Wear, dirt, hair and dust</sub></td>
     <td align="center"><sub><b>Close-up.</b> Instanced hair and dust, kept clear of the frame</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/boolean.png" alt="A filter set into an inset pocket of a housing by the Boolean tool"></td>
+    <td><img src="docs/images/topology.png" alt="Wireframe showing the clean quad grid across an L-shaped fold"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Boolean.</b> The source mesh is cut so the filter sits in its housing</sub></td>
+    <td align="center"><sub><b>Topology.</b> A structured quad grid that follows the fold</sub></td>
   </tr>
 </table>
 
@@ -127,6 +169,9 @@ The **Wear** panel uses the same settings as Blender's Clouds texture (basis, si
 **Pleat Angle** turns the pleat direction on face filters, for diagonal or angled media, and the border still fits the outline.
 
 <p align="center"><img src="docs/images/angle.png" alt="The same square filter with Pleat Angle 0, 30 and 60 degrees" width="100%"></p>
+
+> [!NOTE]
+> Want something simpler, for free? **[Filter Maker Lite](https://github.com/Tooboi/FilterMakerLite)** has every source, pleat shaping, the flat border and the Boolean tool. Filters made in Lite open in Pro unchanged.
 
 ---
 
@@ -168,12 +213,13 @@ Restart Blender and enable the add-on. After pulling changes, use *Reload Script
 
 | I want… | Do this |
 |---|---|
+| **A ready-made filter** | Click **Add Filter Shape** and pick Panel, Round Panel, Cartridge, V-Bank, Box Wrap or Die-Cut Furnace. |
 | **A flat strip / quick test** | Click **New Filter Line**. An editable curve appears at the 3D cursor; click **Edit** next to *Live curve guide* to reshape it, and the filter follows. |
 | **A filter along a path or ring** | Select a curve (e.g. a Bézier circle) → **From Curve / Edges**. Set **Height** and **Height Direction** (X, Y, Z). |
 | **A filter that fills a shape** | Select a mesh, go to Edit Mode, select faces → **From Faces**. Adjacent faces become one continuous sheet. |
 | **A filter from a wire outline** | Select mesh edges in Edit Mode → **From Curve / Edges**. |
 
-Then work down the panel: **Pleats → Pleat Bevel → Wear → Border → Hair / Dust**. When you're happy, click **Finish (Bake)**.
+Then work down the panel: **Pleats → Pleat Bevel → Wear → Border → Face, Wire & Print → Hair / Dust → Materials**. When you're happy, click **Finish (Bake)**, or **Make Game-Ready** for a real-time copy.
 
 > [!TIP]
 > On a heavy filter, turn off **Live** in the header, change several settings, then press the refresh button once.
@@ -199,7 +245,7 @@ All controls live in **3D Viewport → Sidebar (N) → Filter Maker**. Each sect
 <details>
 <summary><b>Presets</b></summary>
 
-Built-in: **Standard Pleated**, **Clean (no wear)**, **HEPA Fine Pleat**, **Coarse Furnace**, **Sharp Paper Fold**, **Dusty Used**.
+Built-in: **Standard Pleated**, **Clean (no wear)**, **HEPA Fine Pleat**, **Coarse Furnace**, **Sharp Paper Fold**, **Die-Cut Furnace**, **Dusty Used**.
 **Save As New** stores your settings as JSON in your Blender user `scripts/presets/filter_maker_pro/` folder. Lengths are saved relative to the source size, so a preset looks the same on a small or a large filter.
 
 <p align="center"><img src="docs/images/presets.png" alt="Clean, HEPA Fine Pleat, Coarse Furnace and Dusty Used presets side by side" width="100%"></p>
@@ -246,6 +292,7 @@ Built-in: **Standard Pleated**, **Clean (no wear)**, **HEPA Fine Pleat**, **Coar
 | Setting | Notes |
 |---|---|
 | Profile | Flat, Chamfer, Round or Lip. |
+| End Caps / Cap Hole | Plates across the ends of ring-shaped filters (cartridges, box wraps), with an optional centre hole. |
 | Width (inward) / Overhang (outward) | How far the frame reaches over the filter and beyond the source edge. |
 | Bevel Size / Lip Step, Round Cuts | Profile detail. |
 | Front / Back Extend | Extra frame thickness on each side of the pleats. |
@@ -253,6 +300,17 @@ Built-in: **Standard Pleated**, **Clean (no wear)**, **HEPA Fine Pleat**, **Coar
 | Shading | **Auto Smooth** is on by default; Shade Smooth is optional. |
 
 <p align="center"><img src="docs/images/borders.png" alt="Flat, Chamfer, Round and Lip border profiles" width="100%"></p>
+</details>
+
+<details>
+<summary><b>Face, Wire &amp; Print</b></summary>
+
+| Setting | Notes |
+|---|---|
+| Face | **Diamond** or **Square** die-cut board over the Front, Back or Both sides. Openings Across, Opening Shape, Strut Width, Corner Cut, Board Thickness. Works on curved, folded and ring-shaped filters too. |
+| Wire Mesh | Wires pleated with the media: Diamond or Square pattern, Spacing, Angle, Radius, Front or Back. Built as a light curve object. |
+| Pull Tabs | One or two board tabs on the long sides: Width, Length, Position. |
+| Printed Graphics | Size label (automatic nominal inches, for example "16 x 25 x 1", or your own text), airflow text and arrow. **Print On** the Sides, the Front or both; the front strip reads upright on the top edge and can carry its own Front Text. |
 </details>
 
 <details>
@@ -266,18 +324,21 @@ Settings marked *shared* shape the common pieces, so changing them on one filter
 |---|---|
 | Density, Length, Width, Length Variation | Density, Size, Size Variation |
 | Lift (the most a strand lifts off the surface) | Tilt Randomness |
-| Curl *(shared)*, Strand Shapes *(shared)* | Dust Types: Flakes, Clumps, Grit, Lint *(shared)*, Piece Variants *(shared)* |
+| Curl *(shared)*, Strand Shapes | Dust Types: Flakes, Clumps, Grit, Lint *(shared)*, Piece Variants |
 | Border Falloff, Viewport Display % | Border Falloff, Viewport Display % |
 | Seed | Seed |
 
 Shared: **Side** (Front, Back or Both) and **Avoid Border**.
+
+**Strand Shapes** and **Piece Variants** are per filter: the shared collection holds as many pieces as the filter that asks for the most, and each filter picks from the first N of them.
 </details>
 
 <details>
-<summary><b>Boolean</b>, <b>Materials</b>, <b>Finish</b></summary>
+<summary><b>Boolean</b>, <b>Materials</b>, <b>Game-Ready</b>, <b>Finish</b></summary>
 
 - **Boolean**: cuts the *source mesh* with a **Bounding Box**, an **Envelope** (the reference shape thickened over the pleats) or any **Object**; operations are Difference, Intersect and Union, with the Exact or Fast solver. The border is not cut.
-- **Materials**: filter, border, hair and dust. Defaults are created for you. The dust material is shared by all filters; the hair material is per filter.
+- **Materials**: pick a built-in **Media** (Paper, Synthetic, HEPA, Fibreglass, Carbon) and **Frame** (Painted, Galvanised, Aluminium, Cardboard, White Board, Plastic, Rubber), or *Custom* for your own material. **Dirt** adds procedural dirt (also exposed as the `fm_dirt` and `fm_edge` mesh attributes for your own shaders). **UVs**: Real-World Size with a Texture Size, or Fit 0-1.
+- **Game-Ready**: Low-Poly Pleats or Flat Card, Texture Size, maps (Normal, AO, Base Color, Roughness), Include Hair & Dust, and FBX / glTF export. The result goes into a "*filter* Low" collection; textures are saved next to the .blend. The bake uses your GPU when one is enabled in *Preferences → System*.
 - **Finish (Bake)**: applies the source Boolean, removes the cutter and turns the filter into regular objects (the filter settings are dropped).
 - **Delete Filter** (trash icon): removes the filter and everything it generated.
 </details>
@@ -288,17 +349,17 @@ Shared: **Side** (Front, Back or Both) and **Avoid Border**.
 
 Median time per edit on a 4-panel box wrap with border, hair and dust (Blender 5.2, measured with the bundled headless benchmark):
 
-| Edit | 0.5.2 | 0.6.6 | Speed-up |
+| Edit | 0.5.2 | 0.7.0 | Speed-up |
 |---|---:|---:|---:|
-| Create box wrap | 403 ms | 214 ms | 1.9× |
-| Enable border + hair + dust | 524 ms | 184 ms | 2.8× |
-| Wear strength slider | 541 ms | 113 ms | 4.8× |
-| Hair density slider | 559 ms | **58 ms** | 9.6× |
-| Dust size slider | 622 ms | **60 ms** | 10× |
-| Pleat density slider | 623 ms | 397 ms | 1.6× |
-| Thickness toggle | 714 ms | 221 ms | 3.2× |
+| Create box wrap | 463 ms | 245 ms | 1.9× |
+| Enable border + hair + dust | 598 ms | 147 ms | 4.1× |
+| Wear strength slider | 585 ms | 139 ms | 4.2× |
+| Hair density slider | 586 ms | **71 ms** | 8.3× |
+| Dust size slider | 561 ms | **70 ms** | 8.0× |
+| Pleat density slider | 642 ms | 453 ms | 1.4× |
+| Thickness toggle | 713 ms | 251 ms | 2.8× |
 
-Why it's faster: the pleated sheet is cached and only rebuilt when the geometry changes; the core passes run in numpy; scatter settings are written straight into the node group, so no mesh is rebuilt; and the curve-sync handler only re-reads curves that actually changed. (Since 0.6.6 the hair is built as real geometry so its width stays constant, which makes hair/dust sliders about 60 ms instead of about 6 ms in 0.6.5. Lower **Viewport Display %** for very dense hair.)
+Why it's fast: the pleated sheet is cached and only rebuilt when the geometry changes; mesh assembly and the core passes run in numpy with `foreach_set`; scatter settings are written straight into the node group, so no mesh is rebuilt; and the curve-sync handler only re-reads curves that changed. The complete Die-Cut Furnace filter (face, wire, tab and print) builds in about 0.12 s.
 
 ---
 
@@ -338,11 +399,13 @@ Open an [issue](https://github.com/Tooboi/FilterMakerPro/issues/new/choose) usin
 
 ## 🗺 Roadmap
 
-- [ ] Publish on the [Blender Extensions platform](https://extensions.blender.org/)
-- [ ] UV coordinates on the pleated sheet (for paper textures and print patterns)
+- [x] UV coordinates on the pleated sheet
+- [x] Built-in materials and dirt
+- [x] Game-ready export
+- [x] Free edition on the [Blender Extensions platform](https://extensions.blender.org/add-ons/filter-maker-lite/)
 - [ ] Faster Pleat Density rebuilds (mesh assembly and the distance pass)
 - [ ] Panel screenshot / GIF walkthrough in the docs
-- [ ] Per-filter material presets (paper, synthetic, carbon)
+- [ ] More filter types (bag filters, V-cell, mini-pleat)
 
 Have an idea? [Open a feature request](https://github.com/Tooboi/FilterMakerPro/issues/new/choose).
 

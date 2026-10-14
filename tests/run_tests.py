@@ -518,18 +518,30 @@ def t_shared_library():
         ok &= g.nodes["FM Hair Collection"].inputs["Collection"].default_value.name == fm.HAIR_LIB_NAME
         ok &= g.nodes["FM Dust Collection"].inputs["Collection"].default_value.name == fm.DUST_LIB_NAME
     record("scatter nodes use the shared collections", ok)
-    # change a shared setting on filter 0 -> others follow, pieces rebuilt once
+    # curl is shared; the number of pieces is per filter, the shared set holds the most
     a, b = made[0].filter_maker, made[1].filter_maker
     n_before = len(bpy.data.collections[fm.HAIR_LIB_NAME].objects)
-    a.hair_variants = 5
+    first = [o.name for o in bpy.data.collections[fm.HAIR_LIB_NAME].objects]
+    a.hair_variants = 12
     a.hair_curl = 1.1
     a.dust_variants = 4
     hc = bpy.data.collections[fm.HAIR_LIB_NAME]
     dc = bpy.data.collections[fm.DUST_LIB_NAME]
-    record("shared settings propagate", b.hair_variants == 5 and abs(b.hair_curl - 1.1) < 1e-6
-           and b.dust_variants == 4 and len(hc.objects) == 5 and len(dc.objects) == 4,
-           b_variants=b.hair_variants, b_curl=round(b.hair_curl, 3), hair_pieces=len(hc.objects),
-           dust_pieces=len(dc.objects), before=n_before)
+
+    def vmax(fp, kind):
+        g = fp.particles_obj.modifiers.get(fm.SCATTER_MOD).node_group
+        return g.nodes["FM %s Variant Max" % kind].integer
+    record("shared curl propagates", abs(b.hair_curl - 1.1) < 1e-6, b_curl=round(b.hair_curl, 3))
+    record("piece variants: shared set holds the most any filter asks for",
+           len(hc.objects) == 12 and b.hair_variants == 8 and len(dc.objects) == 10 and b.dust_variants == 10,
+           hair_pieces=len(hc.objects), dust_pieces=len(dc.objects), b_hair=b.hair_variants,
+           b_dust=b.dust_variants, before=n_before)
+    record("piece variants: each filter picks from its own first N",
+           vmax(a, "Hair") == 11 and vmax(b, "Hair") == 7 and vmax(a, "Dust") == 3 and vmax(b, "Dust") == 9,
+           a_hair=vmax(a, "Hair"), b_hair=vmax(b, "Hair"), a_dust=vmax(a, "Dust"), b_dust=vmax(b, "Dust"))
+    names = [o.name for o in hc.objects]
+    record("piece variants: growing the set keeps the first pieces", names[:len(first)] == first,
+           first=first[:3], now=names[:3])
     # width and material stay per filter
     a.hair_width = 0.0004
     record("hair width is per filter", abs(b.hair_width - 0.0004) > 1e-7 or b.hair_width != a.hair_width,
@@ -542,8 +554,8 @@ def t_shared_library():
     p.use_hair = True
     p.live = True
     fm.regenerate(ob)
-    record("new filter adopts the shared pieces", p.hair_variants == 5 and abs(p.hair_curl - 1.1) < 1e-6
-           and p.hair_lib == hc and len(hc.objects) == 5, variants=p.hair_variants)
+    record("new filter adopts the shared pieces", p.hair_variants == 8 and abs(p.hair_curl - 1.1) < 1e-6
+           and p.hair_lib == hc and len(hc.objects) == 12, variants=p.hair_variants, pieces=len(hc.objects))
     made.append(ob)
     # strand profile: constant, tapering only at the tip
     st = hc.objects[0].data.splines[0].bezier_points
@@ -687,10 +699,404 @@ def t_border_covers_pleats():
     record("curved panel keeps the full frame width", span > 0.109, frame_width_plus_seal=round(span, 4),
            width_setting=p.border_width)
 
+# ---------------------------------------------------------------------------
+# 0.7.0: UVs, materials, shapes, end caps, game-ready
+# ---------------------------------------------------------------------------
+
+def _uv_stats(me, tile):
+    """Ratio of UV area to surface area (scaled by the tile) per face: 1.0 = no stretch."""
+    uvl = me.uv_layers.get(fm.UV_LAYER)
+    if uvl is None:
+        return None
+    ratios, lo, hi = [], [1e9, 1e9], [-1e9, -1e9]
+    for poly in me.polygons:
+        a3 = poly.area
+        if a3 < 1e-10:
+            continue
+        uvs = [uvl.data[i].uv.copy() for i in poly.loop_indices]
+        for uv in uvs:
+            lo = [min(lo[0], uv.x), min(lo[1], uv.y)]
+            hi = [max(hi[0], uv.x), max(hi[1], uv.y)]
+        a2 = 0.0
+        for k in range(len(uvs)):
+            x0, y0 = uvs[k]
+            x1, y1 = uvs[(k + 1) % len(uvs)]
+            a2 += x0 * y1 - x1 * y0
+        ratios.append(abs(a2) * 0.5 * tile * tile / a3)
+    ratios.sort()
+    n = len(ratios)
+    return dict(faces=n, median=round(ratios[n // 2], 4), p05=round(ratios[n // 20], 4),
+                p95=round(ratios[(19 * n) // 20], 4), lo=[round(x, 3) for x in lo], hi=[round(x, 3) for x in hi])
+
+
+def t_uvs():
+    clear_scene()
+    src = make_mesh("RefUV", [(0, 0, 0), (1, 0, 0), (1, 0, 0.6), (0, 0, 0.6)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.live = False
+    p.noise_strength = 0.0
+    p.use_border = True
+    p.uv_mode = 'WORLD'
+    p.uv_tile = 0.1
+    p.live = True
+    fm.regenerate(ob)
+    st = _uv_stats(ob.data, 0.1)
+    record("face filter has UVs with no stretch (real-world size)",
+           st is not None and abs(st["median"] - 1.0) < 0.02 and st["p05"] > 0.9 and st["p95"] < 1.1, **(st or {}))
+    bst = _uv_stats(p.border_obj.data, 0.1) if p.border_obj else None
+    record("border has UVs at the same texel density",
+           bst is not None and abs(bst["median"] - 1.0) < 0.15, **(bst or {}))
+    p.pleat_angle = math.radians(35)
+    st = _uv_stats(ob.data, 0.1)
+    record("UVs stay stretch-free with a pleat angle",
+           st is not None and abs(st["median"] - 1.0) < 0.02 and st["p05"] > 0.85, **(st or {}))
+    p.uv_mode = 'FIT'
+    st = _uv_stats(ob.data, 1.0)
+    record("Fit 0-1 keeps UVs inside the unit square",
+           st is not None and min(st["lo"]) > -1e-4 and max(st["hi"]) < 1.0 + 1e-4, lo=st and st["lo"], hi=st and st["hi"])
+    clear_scene()
+    bpy.ops.filter.new_line()
+    ob = bpy.context.active_object
+    p = ob.filter_maker
+    p.noise_strength = 0.0
+    st = _uv_stats(ob.data, p.uv_tile)
+    record("curve filter has stretch-free UVs",
+           st is not None and abs(st["median"] - 1.0) < 0.02 and st["p05"] > 0.9, **(st or {}))
+    clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    cube = bpy.context.active_object
+    ob, _t = faces_filter(cube, select=lambda f: abs(f.normal.z) < 0.5)
+    ob.filter_maker.noise_strength = 0.0
+    st = _uv_stats(ob.data, ob.filter_maker.uv_tile)
+    record("box wrap UVs are stretch-free around the corners",
+           st is not None and abs(st["median"] - 1.0) < 0.05 and st["p05"] > 0.8, **(st or {}))
+
+
+def t_materials():
+    clear_scene()
+    src = make_mesh("RefMat", [(0, 0, 0), (1, 0, 0), (1, 0, 0.6), (0, 0, 0.6)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.use_border = True
+    bad = []
+    for key, _n, _d in fm.FILTER_STYLES:
+        if key == 'CUSTOM':
+            continue
+        p.filter_style = key
+        m = p.filter_material
+        ok = m is not None and m.name.startswith("FM Media") and m.node_tree is not None and \
+            any(n.type == 'BSDF_PRINCIPLED' for n in m.node_tree.nodes) and ob.data.materials[0] == m \
+            and m.get("fm_style_v") is not None and len(m.node_tree.links) > 4
+        if not ok:
+            bad.append((key, m.get("fm_style_error") if m else None))
+    for key, _n, _d in fm.FRAME_STYLES:
+        if key == 'CUSTOM':
+            continue
+        p.frame_style = key
+        m = p.border_material
+        ok = m is not None and m.name.startswith("FM Frame") and p.border_obj.data.materials[0] == m \
+            and m.get("fm_style_v") is not None and len(m.node_tree.links) > 2
+        if not ok:
+            bad.append((key, m.get("fm_style_error") if m else None))
+    record("all built-in materials build without errors and get assigned", not bad, failed=bad,
+           media=len(fm.FILTER_STYLES) - 1, frames=len(fm.FRAME_STYLES) - 1)
+    p.dirt = 0.7
+    a = ob.data.attributes.get(fm.DIRT_ATTR)
+    vals = [0.0] * len(ob.data.vertices)
+    if a is not None:
+        a.data.foreach_get("value", vals)
+    W = p.border_width
+    near = [v for v, vert in zip(vals, ob.data.vertices) if min(vert.co.x, 1 - vert.co.x, vert.co.z, 0.6 - vert.co.z) < W]
+    record("dirt mask: clean under the frame, dirty inside",
+           a is not None and max(vals) > 0.3 and (max(near) if near else 0.0) < 0.05,
+           max=round(max(vals), 3), under_frame_max=round(max(near), 3) if near else None)
+    render("09_materials_dirt", [ob] + [o for o in (p.border_obj,) if o], direction=(0.6, -1.5, 0.4))
+
+
+def t_shapes():
+    bad, info = [], {}
+    for shape, _n, _d in fm.FILTER_SHAPES:
+        clear_scene()
+        res = bpy.ops.filter.add_shape(shape=shape)
+        ob = bpy.context.active_object
+        p = ob.filter_maker if ob else None
+        ok = 'FINISHED' in res and p is not None and p.is_filter and not p.last_error and len(ob.data.polygons) > 0
+        info[shape] = dict(faces=len(ob.data.polygons) if ob else 0, error=p.last_error if p else "?",
+                           border=len(p.border_obj.data.polygons) if (p and p.border_obj) else 0)
+        if not ok:
+            bad.append(shape)
+        if ok:
+            render("10_shape_%s" % shape.lower(), [ob] + [o for o in (p.border_obj,) if o], direction=(1.0, -1.3, 0.8))
+    record("every Add Filter Shape builds", not bad, failed=bad, **info)
+
+
+def t_caps():
+    clear_scene()
+    bpy.ops.filter.add_shape(shape='CARTRIDGE')
+    ob = bpy.context.active_object
+    p = ob.filter_maker
+    p.border_caps = 'NONE'
+    n_none = len(p.border_obj.data.polygons)
+    p.border_caps = 'BOTH'
+    p.border_cap_hole = 0.0
+    n_both = len(p.border_obj.data.polygons)
+    p.border_cap_hole = 0.5
+    n_hole = len(p.border_obj.data.polygons)
+    p.border_caps = 'TOP'
+    n_top = len(p.border_obj.data.polygons)
+    record("end caps: solid, with a hole, one end",
+           n_both == n_none + 2 and n_hole > n_both and n_none < n_top < n_hole,
+           none=n_none, both_solid=n_both, both_hole=n_hole, top_hole=n_top)
+    clear_scene()
+    src = make_mesh("RefCapPanel", [(0, 0, 0), (1, 0, 0), (1, 0, 0.6), (0, 0, 0.6)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.use_border = True
+    n0 = len(p.border_obj.data.polygons)
+    p.border_caps = 'BOTH'
+    record("end caps never cover a flat panel", len(p.border_obj.data.polygons) == n0, before=n0,
+           after=len(p.border_obj.data.polygons))
+
+
+def render_material(name, objs, direction=(0.9, -1.6, 0.7), res=(1000, 1300), close=0.9):
+    """Material-preview style render (EEVEE, falling back to a quick Cycles render)."""
+    scene = bpy.context.scene
+    world = scene.world or bpy.data.worlds.new("FMTestWorld")
+    scene.world = world
+    try:
+        world.use_nodes = True
+        bg = world.node_tree.nodes.get("Background")
+        if bg is not None:
+            bg.inputs[0].default_value = (0.32, 0.34, 0.38, 1.0)
+            bg.inputs[1].default_value = 1.0
+    except Exception:
+        pass
+    lo, hi = bounds(objs)
+    center = (lo + hi) * 0.5
+    radius = max((hi - lo).length * 0.5, 1e-3)
+    sun = bpy.data.objects.get("FMTestSun")
+    if sun is None:
+        sun = bpy.data.objects.new("FMTestSun", bpy.data.lights.new("FMTestSun", 'SUN'))
+        scene.collection.objects.link(sun)
+    sun.data.energy = 3.0
+    sun.rotation_euler = (math.radians(50), math.radians(10), math.radians(35))
+    render(name + "_wb", objs, direction=direction, res=res, close=close)
+    engines = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
+    eng = next((e for e in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE") if e in engines), None)
+    for engine in ([eng] if eng else []) + ["CYCLES"]:
+        try:
+            scene.render.engine = engine
+            if engine == "CYCLES":
+                scene.cycles.samples = 24
+                scene.cycles.device = 'CPU'
+            scene.render.filepath = os.path.join(OUT, name + ".png")
+            bpy.ops.render.render(write_still=True)
+            log("  rendered", name + ".png", "with", engine)
+            return
+        except Exception:
+            log("  material render failed with", engine, traceback.format_exc().splitlines()[-1])
+
+
+def _first_hits(objs_a, objs_b, origins, direction):
+    """For each ray: True when it reaches objs_b before (or without) hitting objs_a."""
+    from mathutils.bvhtree import BVHTree
+    dg = bpy.context.evaluated_depsgraph_get()
+
+    def tree(objs):
+        vs, fs = [], []
+        for ob in objs:
+            ev = ob.evaluated_get(dg)
+            me = ev.to_mesh()
+            off = len(vs)
+            vs += [ob.matrix_world @ v.co for v in me.vertices]
+            fs += [[off + i for i in pl.vertices] for pl in me.polygons]
+            ev.to_mesh_clear()
+        return BVHTree.FromPolygons(vs, fs) if fs else None
+    ta, tb = tree(objs_a), tree(objs_b)
+    out = []
+    for o in origins:
+        ha = ta.ray_cast(o, direction) if ta else (None, None, None, None)
+        hb = tb.ray_cast(o, direction) if tb else (None, None, None, None)
+        da = ha[3] if ha[0] is not None else 1e9
+        db = hb[3] if hb[0] is not None else 1e9
+        out.append(db < da)
+    return out
+
+
+def t_diecut():
+    clear_scene()
+    t0 = time.time()
+    res = bpy.ops.filter.add_shape(shape='FURNACE', width=0.3937, height=0.6223)
+    ob = bpy.context.active_object
+    p = ob.filter_maker
+    secs = round(time.time() - t0, 2)
+    fr = p.border_obj
+    record("die-cut furnace filter builds", 'FINISHED' in res and not p.last_error and fr is not None,
+           seconds=secs, error=p.last_error, border_faces=len(fr.data.polygons) if fr else 0,
+           timings=dict(fm.LAST_TIMINGS))
+    if fr is None:
+        return
+    # rays through the face: some pass through the openings to the pleats, some hit the board
+    w, h = 0.3937, 0.6223
+    W = p.border_width
+    pts = [(-w / 2 + W + (w - 2 * W) * (i + 0.5) / 24, h * 0 + W + (h - 2 * W) * (j + 0.5) / 36)
+           for i in range(24) for j in range(36)]
+    fracs = {}
+    for side, y, d in (("front", 0.5, Vector((0, -1, 0))), ("back", -0.5, Vector((0, 1, 0)))):
+        hits = _first_hits([fr], [ob], [Vector((x, y, z)) for x, z in pts], d)
+        fracs[side] = round(sum(hits) / len(hits), 3)
+    record("die-cut face has openings on both sides",
+           all(0.3 < f < 0.9 for f in fracs.values()), open_fraction=fracs)
+    # wire mesh: a curve object whose wires sit on the pleated media
+    wo = p.wire_obj
+    ok_w, info = False, {}
+    if wo is not None and wo.type == 'CURVE':
+        from mathutils.bvhtree import BVHTree
+        dg = bpy.context.evaluated_depsgraph_get()
+        me = ob.evaluated_get(dg).to_mesh()
+        tree = BVHTree.FromPolygons([v.co.copy() for v in me.vertices], [list(pl.vertices) for pl in me.polygons])
+        ob.evaluated_get(dg).to_mesh_clear()
+        sample = [Vector(pt.co[:3]) for s in wo.data.splines for pt in s.points][::7][:400]
+        dists = [tree.find_nearest(c)[3] for c in sample]
+        npts = sum(len(s.points) for s in wo.data.splines)
+        info = dict(splines=len(wo.data.splines), points=npts,
+                    max_gap=round(max(dists), 5) if dists else None, radius=p.wire_radius)
+        ok_w = len(wo.data.splines) > 10 and npts > 200 and dists and max(dists) < 4 * p.wire_radius + 0.002
+    record("wire mesh lies on the pleats", ok_w, **info)
+    # pull tab sticks out of one long side
+    lo, hi = bounds([fr])
+    reach = max(hi.x - w / 2, -w / 2 - lo.x)
+    record("pull tab sticks out of the frame", reach > 0.5 * p.tab_length, reach=round(reach, 4),
+           tab_length=p.tab_length)
+    # printed graphics with the nominal size label
+    po = p.print_obj
+    rb = bmesh.new()
+    fm.build_reference(rb, p, json.loads(p.src))
+    _W, O, F, B, _fit = fm._border_dims(p, fm._rb_small(rb))
+    label = fm._auto_size_label(fm._outline_frames(rb, 1e-4), O, F + B + p.board_thickness)
+    rb.free()
+    nf = len(po.data.polygons) if po else 0
+    record("printed label, airflow text and arrow", po is not None and nf > 40 and label == "16 x 25 x 1",
+           faces=nf, label=label)
+    p.print_place = 'FRONT'
+    po = p.print_obj
+    vs = [po.matrix_world @ v.co for v in po.data.vertices] if po else []
+    on_front = [v for v in vs if abs(v.x) < w / 2 and abs(v.y) > 0.5 * F]
+    record("printed text on the front face", po is not None and vs and len(on_front) == len(vs)
+           and max(v.z for v in vs) > h - p.border_width - 0.005,
+           verts=len(vs), on_front=len(on_front), top=round(max(v.z for v in vs), 4) if vs else None)
+    p.print_place = 'BOTH'
+    nb = len(p.print_obj.data.polygons) if p.print_obj else 0
+    record("printed on the sides and the front", nb > nf, faces=nb, sides_only=nf)
+    po = p.print_obj
+    render_material("12_diecut_furnace", [ob, fr] + [o for o in (wo, po) if o])
+    render("12_diecut_closeup", [ob, fr] + [o for o in (wo, po) if o], direction=(0.5, -1.4, 0.35), close=0.35)
+    render("12_diecut_side_print", [ob, fr] + [o for o in (po,) if o], direction=(1.6, -0.25, 0.1), close=0.55)
+    # every other face option and shape
+    bad = {}
+    for shape, pattern, side in (('CARTRIDGE', 'SQUARE', 'FRONT'), ('BOX', 'DIAMOND', 'BOTH'),
+                                 ('ROUND', 'DIAMOND', 'FRONT'), ('PANEL', 'SQUARE', 'BACK')):
+        clear_scene()
+        bpy.ops.filter.add_shape(shape=shape)
+        o2 = bpy.context.active_object
+        q = o2.filter_maker
+        n0 = len(q.border_obj.data.polygons) if q.border_obj else 0
+        q.grille_side = side
+        q.grille_pattern = pattern
+        q.pull_tabs = 2 if shape == 'PANEL' else 0
+        n1 = len(q.border_obj.data.polygons) if q.border_obj else 0
+        if q.last_error or n1 <= n0:
+            bad[shape] = dict(error=q.last_error, before=n0, after=n1)
+        if shape in ('CARTRIDGE', 'BOX'):
+            render("12_face_%s" % shape.lower(), [o2, q.border_obj], direction=(1.0, -1.3, 0.8))
+    record("die-cut face on cartridge, box wrap, round and back side", not bad, failed=bad)
+    # square pattern: the open share must match a full grid of struts (a strut missing on
+    # one side of each cell, as in the first 0.7.0 build, opens far more of the face)
+    clear_scene()
+    bpy.ops.filter.add_shape(shape='PANEL', width=0.6, height=0.4)
+    o4 = bpy.context.active_object
+    q = o4.filter_maker
+    q.grille_side, q.grille_pattern, q.grille_cells, q.grille_strut = 'FRONT', 'SQUARE', 3, 0.2
+    W4 = q.border_width
+    pts = [Vector((-0.3 + W4 + (0.6 - 2 * W4) * (i + 0.5) / 40, 0.0, W4 + (0.4 - 2 * W4) * (j + 0.5) / 30))
+           for i in range(40) for j in range(30)]
+    best = None
+    for y, d in ((0.5, Vector((0, -1, 0))), (-0.5, Vector((0, 1, 0)))):
+        hits = _first_hits([q.border_obj], [o4], [c + Vector((0, y, 0)) for c in pts], d)
+        f = sum(hits) / len(hits)
+        best = f if best is None else min(best, f)
+    expect = (1.0 - q.grille_strut) ** 2
+    record("square face: full grid of struts", abs(best - expect) < 0.08, open_fraction=round(best, 3),
+           expected=round(expect, 3))
+    render("12_face_square_panel", [o4, q.border_obj], direction=(0.3, -1.6, 0.2))
+    # wire on a curve filter
+    clear_scene()
+    bpy.ops.filter.new_line()
+    o3 = bpy.context.active_object
+    o3.filter_maker.use_wire = True
+    w3 = o3.filter_maker.wire_obj
+    record("wire mesh on a curve filter", w3 is not None and len(w3.data.splines) > 5 and not o3.filter_maker.last_error,
+           splines=len(w3.data.splines) if w3 else 0, error=o3.filter_maker.last_error)
+    o3.filter_maker.use_wire = False
+    record("wire mesh removed when switched off", o3.filter_maker.wire_obj is None
+           and not any(c.name.endswith("_Wire") for c in o3.children))
+
+
+def t_game_ready():
+    clear_scene()
+    src = make_mesh("RefGame", [(0, 0, 0), (0.6, 0, 0), (0.6, 0, 0.4), (0, 0, 0.4)], [(0, 1, 2, 3)])
+    ob, _t = faces_filter(src)
+    p = ob.filter_maker
+    p.live = False
+    p.use_border = True
+    p.use_dust = True
+    p.use_hair = True
+    p.hair_density = 400.0
+    p.dust_density = 800.0
+    p.game_resolution = '512'
+    p.game_maps = {'NORMAL', 'AO', 'COLOR'}
+    p.game_export = 'GLB'
+    p.game_path = os.path.join(OUT, "game_export.glb")
+    p.live = True
+    fm.regenerate(ob)
+    high_tris = sum(len(pl.vertices) - 2 for pl in ob.data.polygons)
+    for lod in ('PLEATED', 'FLAT'):
+        p.game_lod = lod
+        t0 = time.time()
+        set_active(ob)
+        res = bpy.ops.filter.game_ready()
+        low = bpy.data.objects.get(ob.name + "_low")
+        tris = sum(len(pl.vertices) - 2 for pl in low.data.polygons) if low else 0
+        uvl = low.data.uv_layers.get(fm.UV_LAYER) if low else None
+        inside = uvl is not None and all(-1e-4 <= d.uv.x <= 1 + 1e-4 and -1e-4 <= d.uv.y <= 1 + 1e-4 for d in uvl.data)
+        nimg = bpy.data.images.get(ob.name + "_normal")
+        spread = 0.0
+        if nimg is not None and nimg.size[0]:
+            px = list(nimg.pixels[:])
+            reds = px[0::4][:: max(1, len(px) // 40000)]
+            mean = sum(reds) / len(reds)
+            spread = (sum((r - mean) ** 2 for r in reds) / len(reds)) ** 0.5
+        smooth = low is not None and all(pl.use_smooth for pl in low.data.polygons)
+        record("game-ready %s: low poly is smooth-shaded for clean bakes" % lod, smooth)
+        record("game-ready %s: low poly, packed UVs, baked maps" % lod,
+               'FINISHED' in res and low is not None and tris < high_tris * 0.25 and inside and spread > 0.01,
+               seconds=round(time.time() - t0, 1), low_tris=tris, high_tris=high_tris, uvs_in_0_1=inside,
+               normal_map_variation=round(spread, 4))
+        if lod == 'FLAT' and low is not None:
+            render("11_game_ready_flat", [low], direction=(0.6, -1.5, 0.4))
+    record("game-ready export written", os.path.exists(p.game_path), path=p.game_path)
+    record("game-ready objects go into the '<filter> Low' collection",
+           bpy.data.collections.get(ob.name + " Low") is not None
+           and bpy.data.collections.get(ob.name + " Game") is None,
+           collections=[c.name for c in bpy.data.collections])
+
+
 for name, fn in (("new line", t_new_line), ("plane", t_plane), ("L fold", t_lfold),
                  ("box wrap", t_box_wrap), ("full featured", t_full_featured),
                  ("presets", t_presets), ("icons", t_icons), ("shared library", t_shared_library),
-                 ("border coverage", t_border_covers_pleats)):
+                 ("border coverage", t_border_covers_pleats), ("uvs", t_uvs), ("materials", t_materials),
+                 ("shapes", t_shapes), ("caps", t_caps), ("die-cut", t_diecut), ("game ready", t_game_ready)):
     run(name, fn)
 
 # ---------------------------------------------------------------------------

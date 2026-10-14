@@ -1,10 +1,12 @@
-"""Showcase renders for the Filter Maker Pro README.
+"""Showcase renders for the Filter Maker Pro and Lite READMEs and listings.
 
 Run from the repository root:
-    blender -b --factory-startup --python tests/render_showcase.py
-Images go to tests/results/showcase/ (transparent PNGs). Nothing is installed: the add-on is
-loaded straight from the repository for this session only.
-Renders use EEVEE with a transparent background so they can be placed on any card colour.
+    blender -b --factory-startup --python tests/render_showcase.py            (Pro)
+    python tools/build_lite.py tests/FilterMakerLite
+    blender -b --factory-startup --python tests/render_showcase.py -- --lite  (Lite)
+Images go to tests/results/showcase/ (Pro) or tests/results/showcase_lite/ (Lite); build the
+README / listing media from them with tools/make_media.py. Nothing is installed. Renders use EEVEE with a transparent background so they can
+be placed on any card colour.
 """
 import bpy
 import bmesh
@@ -18,8 +20,10 @@ import traceback
 from mathutils import Vector
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(HERE)
-OUT = os.path.join(HERE, "results", "showcase")
+ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+LITE = "--lite" in ARGS
+ONLY = [a for a in ARGS if not a.startswith("--")]        # optional: render only these shots
+OUT = os.path.join(HERE, "results", "showcase_lite" if LITE else "showcase")
 os.makedirs(OUT, exist_ok=True)
 _log = open(os.path.join(OUT, "showcase_log.txt"), "w", encoding="utf-8")
 META = {"blender": bpy.app.version_string, "shots": {}}
@@ -32,12 +36,18 @@ def log(*a):
     _log.flush()
 
 
-import importlib.util
-_spec = importlib.util.spec_from_file_location("FilterMakerPro", os.path.join(REPO, "__init__.py"),
-                                               submodule_search_locations=[REPO])
-fm = importlib.util.module_from_spec(_spec)
-sys.modules["FilterMakerPro"] = fm
-_spec.loader.exec_module(fm)
+REPO = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+if LITE:
+    # build the Lite edition from this repository first: python tools/build_lite.py tests/FilterMakerLite
+    fm = importlib.import_module("FilterMakerLite")
+else:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("FilterMakerPro", os.path.join(REPO, "__init__.py"),
+                                                   submodule_search_locations=[REPO])
+    fm = importlib.util.module_from_spec(_spec)
+    sys.modules["FilterMakerPro"] = fm
+    _spec.loader.exec_module(fm)
 fm.register()
 log("Blender", bpy.app.version_string, "| add-on", fm.bl_info.get("version"))
 
@@ -133,7 +143,16 @@ def principled(mat, color, rough=0.6, metal=0.0, extra=None):
                 pass
 
 
-def style_materials(p, frame=(0.045, 0.047, 0.05, 1.0), paper=(0.86, 0.83, 0.74, 1.0)):
+def style_materials(p, frame=(0.045, 0.047, 0.05, 1.0), paper=(0.86, 0.83, 0.74, 1.0),
+                    media=None, frame_style=None):
+    """Pro: the built-in materials (media / frame styles). Lite: plain principled colours."""
+    if not LITE:
+        p.live = False
+        p.filter_style = media or 'PAPER'
+        p.frame_style = frame_style or 'PAINTED'
+        p.live = True
+        fm.regenerate(p.id_data)
+        return
     principled(p.filter_material, paper, 0.85, 0.0, {"Sheen Weight": 0.3})
     principled(p.border_material, frame, 0.78, 0.0, {"Specular IOR Level": 0.2, "Coat Weight": 0.0})
     principled(p.hair_material, (0.82, 0.8, 0.76, 1.0), 0.55)
@@ -217,6 +236,7 @@ def render(name, objs, direction=(1.0, -1.4, 0.9), lens=50, res=(1400, 900), clo
            target=None, workbench=False, transparent=True, samples=64):
     scene = bpy.context.scene
     bpy.context.view_layer.update()          # fresh bound boxes for objects made via bpy.data
+    objs = [o for o in objs if o is not None and o.type == 'MESH'] or objs
     lo, hi = bounds(objs)
     META.setdefault("bounds", {})[name] = [list(map(lambda v: round(v, 3), lo)), list(map(lambda v: round(v, 3), hi))]
     center = (lo + hi) * 0.5 if target is None else Vector(target)
@@ -244,7 +264,7 @@ def render(name, objs, direction=(1.0, -1.4, 0.9), lens=50, res=(1400, 900), clo
     dist = 0.0
     corners = []
     for ob in objs:
-        if ob is None:
+        if ob is None or ob.type != 'MESH':
             continue
         corners += [ob.matrix_world @ Vector(c) for c in ob.bound_box]
     for c in corners:
@@ -323,14 +343,14 @@ def shot_hero():
     p = configure(ob, use_border=True, border_profile='LIP', border_width=0.035,
                   border_bevel=0.008, border_front=0.012, border_back=0.012,
                   use_thickness=True, thickness=0.0012, hair_density=1400.0, dust_density=6000.0)
-    style_materials(p)
+    style_materials(p, frame_style='GALVANIZED')
     META["hero_mesh"] = mesh_info(ob)
     META["hero_materials"] = mat_report(p)
     META["hero_slots"] = [ms.material.name if ms.material else None for ms in ob.material_slots] + \
         ([ms.material.name if ms.material else None for ms in p.border_obj.material_slots] if p.border_obj else [])
     META["hero_regen_ms"] = timed_regen(ob)
     objs = filter_objs(ob)
-    render("hero", objs, direction=(0.95, -1.55, 0.42), lens=55, res=(1800, 1000), close=0.98)
+    render("hero_dusty", objs, direction=(0.95, -1.55, 0.42), lens=55, res=(1800, 1000), close=0.98)
     render("macro", [ob], direction=(0.35, -1.6, 0.32), lens=85, res=(1400, 900), close=0.13,
            target=(0.06, 0.0, 0.08), samples=96)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, "showcase_hero.blend"), check_existing=False)
@@ -345,7 +365,7 @@ def shot_cylinder():
     p = configure(ob, height=0.55, pleat_density=48.0, pleat_depth=0.03, use_border=True,
                   border_profile='ROUND', border_width=0.03, border_front=0.01, border_back=0.01,
                   noise_strength=0.0015)
-    style_materials(p, frame=(0.07, 0.07, 0.075, 1.0))
+    style_materials(p, frame=(0.07, 0.07, 0.075, 1.0), media='SYNTHETIC', frame_style='GALVANIZED')
     circ.hide_render = True
     META["cylinder_mesh"] = mesh_info(ob)
     render("cylinder", filter_objs(ob), direction=(0.9, -1.4, 0.95), lens=60, res=(1200, 900))
@@ -358,7 +378,7 @@ def shot_box():
     ob = faces_filter(cube, select=lambda f: abs(f.normal.z) < 0.5)
     p = configure(ob, use_border=True, border_profile='CHAMFER', border_width=0.025,
                   border_bevel=0.008, pleat_density=60.0)
-    style_materials(p, frame=(0.012, 0.02, 0.035, 1.0))
+    style_materials(p, frame=(0.012, 0.02, 0.035, 1.0), media='HEPA', frame_style='ALUMINIUM')
     META["box_mesh"] = mesh_info(ob)
     render("box_wrap", filter_objs(ob), direction=(1.0, -1.25, 0.8), lens=60, res=(1200, 900))
 
@@ -435,7 +455,6 @@ def shot_presets():
         ob = faces_filter(src)
         fm.apply_preset(ob, "B:" + name)
         p = configure(ob, use_border=True, border_profile='FLAT', border_width=0.02)
-        style_materials(p)
         objs += filter_objs(ob)
     render("presets", objs, direction=(0.3, -1.5, 0.3), lens=60, res=(1600, 620))
 
@@ -571,16 +590,207 @@ def shot_sources():
                                      cyclic=True))
     guides.append(_guide_from_points("G4b", [verts[1], verts[2]]))
     for o in objs:
-        style_materials(o.filter_maker)
+        style_materials(o.filter_maker, frame_style='PLASTIC' if not LITE else None)
     allobjs = [o for ob in objs for o in filter_objs(ob)] + guides
     render("sources", allobjs, direction=(0.0, -1.35, 0.85), lens=70, res=(1800, 620))
     label_layout("sources", [0.0, gap, 2 * gap, 3 * gap - 0.05])
 
 
-for name, fn in (("hero", shot_hero), ("cylinder", shot_cylinder), ("box", shot_box),
-                 ("topology", shot_topology), ("bevels", shot_bevels), ("borders", shot_borders),
-                 ("presets", shot_presets), ("noise", shot_noise), ("angle", shot_angle),
-                 ("sources", shot_sources)):
+# ---------------------------------------------------------------------------
+# 0.7.0 shots
+# ---------------------------------------------------------------------------
+FURNACE = dict(shape='FURNACE', width=0.3937, height=0.6223)
+
+
+def all_objs(ob):
+    p = ob.filter_maker
+    return [ob] + [o for o in (p.border_obj, getattr(p, "wire_obj", None), getattr(p, "print_obj", None))
+                   if o is not None]
+
+
+def add_shape(x, z=0.0, **kw):
+    bpy.context.scene.cursor.location = (x, 0.0, z)
+    bpy.ops.filter.add_shape(**kw)
+    ob = bpy.context.active_object
+    if ob.filter_maker.source_obj is not None:
+        ob.filter_maker.source_obj.hide_render = True
+    return ob
+
+
+def shot_furnace():
+    clear_scene()
+    ob = add_shape(0.0, **FURNACE)
+    p = configure(ob, print_place='BOTH', print_front_text="MERV 8    16 x 25 x 1")
+    META["furnace"] = {"filter": mesh_info(ob), "border_faces": len(p.border_obj.data.polygons),
+                       "wire_splines": len(p.wire_obj.data.splines) if p.wire_obj else 0,
+                       "regen_ms": timed_regen(ob)}
+    objs = all_objs(ob)
+    render("hero", objs, direction=(0.95, -1.55, 0.42), lens=55, res=(1800, 1000), close=0.98)
+    render("furnace_front", objs, direction=(0.12, -1.0, 0.1), lens=55, res=(1000, 1300), close=0.95)
+    render("furnace_macro", [ob], direction=(0.45, -1.6, 0.38), lens=85, res=(1400, 900), close=0.22,
+           target=(0.03, 0.0, 0.33), samples=96)
+    render("furnace_print", objs, direction=(1.7, -0.55, 0.35), lens=85, res=(1400, 900), close=0.3,
+           target=(0.2, 0.0, 0.2))
+
+
+def shot_shapes():
+    clear_scene()
+    looks = {'PANEL': ('PAPER', 'PAINTED'), 'ROUND': ('SYNTHETIC', 'ALUMINIUM'),
+             'CARTRIDGE': ('PAPER', 'RUBBER'), 'VBANK': ('FIBERGLASS', 'GALVANIZED'),
+             'BOX': ('HEPA', 'PLASTIC'), 'FURNACE': ('HEPA', 'WHITE_BOARD')}
+    objs, xs = [], []
+    for i, (shape, _n, _d) in enumerate(fm.FILTER_SHAPES):
+        x, z = (i % 3) * 0.72, -(i // 3) * 0.78
+        kw = dict(FURNACE) if shape == 'FURNACE' else dict(shape=shape)
+        if shape in {'PANEL', 'VBANK', 'BOX'}:
+            kw.update(width=0.5, height=0.36)
+        if shape == 'CARTRIDGE':
+            kw.update(radius=0.15, height=0.36)
+        if shape == 'ROUND':
+            kw.update(radius=0.2)
+        ob = add_shape(x, z=z, **kw)
+        media, frame = looks.get(shape, ('PAPER', 'PAINTED'))
+        style_materials(ob.filter_maker, media=media, frame_style=frame)
+        objs += all_objs(ob)
+        xs.append((x, z))
+    label_layout("shapes", xs)
+    render("shapes", objs, direction=(0.3, -1.5, 0.45), lens=70, res=(1800, 1150))
+
+
+def _panel(x, w=0.34, h=0.46, **values):
+    src = make_mesh("RefM%.2f" % x, [(x, 0, 0), (x + w, 0, 0), (x + w, 0, h), (x, 0, h)], [(0, 1, 2, 3)])
+    ob = faces_filter(src)
+    configure(ob, **values)
+    return ob
+
+
+def shot_materials():
+    clear_scene()
+    combos = (('PAPER', 'PAINTED'), ('SYNTHETIC', 'ALUMINIUM'), ('HEPA', 'PLASTIC'),
+              ('FIBERGLASS', 'CARDBOARD'), ('CARBON', 'GALVANIZED'))
+    objs = []
+    for i, (media, frame) in enumerate(combos):
+        ob = _panel(i * 0.44, pleat_density=40.0, pleat_depth=0.014, use_border=True, border_width=0.022,
+                    noise_strength=0.0008, filter_style=media, frame_style=frame)
+        objs += all_objs(ob)
+    render("materials", objs, direction=(0.3, -1.5, 0.3), lens=60, res=(2000, 640))
+
+
+def shot_dirt():
+    clear_scene()
+    objs = []
+    for i, dirt in enumerate((0.0, 0.45, 0.95)):
+        ob = _panel(i * 0.44, pleat_density=40.0, pleat_depth=0.014, use_border=True, border_width=0.022,
+                    noise_strength=0.0015, filter_style='PAPER', frame_style='GALVANIZED', dirt=dirt)
+        objs += all_objs(ob)
+    render("dirt", objs, direction=(0.3, -1.5, 0.3), lens=60, res=(1600, 640))
+
+
+def shot_faces():
+    """Die-cut faces and wire on different shapes."""
+    clear_scene()
+    objs = []
+    ob = add_shape(0.0, z=0.0, **FURNACE)
+    objs += all_objs(ob)
+    ob = add_shape(0.75, z=0.14, shape='PANEL', width=0.5, height=0.36)
+    configure(ob, grille_pattern='SQUARE', grille_side='FRONT', grille_cells=3, grille_strut=0.12,
+              filter_style='SYNTHETIC', frame_style='PAINTED', use_wire=True, wire_pattern='SQUARE',
+              wire_spacing=0.02, wire_radius=0.0006)
+    objs += all_objs(ob)
+    ob = add_shape(0.0, z=-0.75, shape='CARTRIDGE', radius=0.15, height=0.4)
+    configure(ob, grille_pattern='DIAMOND', grille_side='FRONT', grille_cells=4, grille_strut=0.1,
+              filter_style='PAPER', frame_style='GALVANIZED')
+    objs += all_objs(ob)
+    ob = add_shape(0.75, z=-0.72, shape='BOX', width=0.4, height=0.3)
+    configure(ob, grille_pattern='DIAMOND', grille_side='FRONT', grille_cells=3, use_wire=True,
+              filter_style='HEPA', frame_style='PAINTED')
+    objs += all_objs(ob)
+    label_layout("faces", [(0.0, 0.0), (0.75, 0.14), (0.0, -0.75), (0.75, -0.72)])
+    render("faces", objs, direction=(0.35, -1.5, 0.5), lens=70, res=(1500, 1300))
+
+
+def shot_game_ready():
+    clear_scene()
+    ob = add_shape(0.0, **FURNACE)
+    p = ob.filter_maker
+    p.game_lod = 'FLAT'
+    p.game_resolution = '1024'
+    p.game_maps = {'NORMAL', 'AO', 'COLOR'}
+    p.game_particles = False
+    p.game_export = 'NONE'
+    set_active(ob)
+    t0 = time.time()
+    res = bpy.ops.filter.game_ready()
+    secs = round(time.time() - t0, 1)
+    low = bpy.data.objects.get(ob.name + "_low")
+    if low is None:
+        log("  game-ready failed:", res)
+        return
+    low.location.x += 0.55
+    high_tris = sum(len(pl.vertices) - 2 for o in all_objs(ob) if o.type == 'MESH' for pl in o.data.polygons)
+    low_tris = sum(len(pl.vertices) - 2 for pl in low.data.polygons)
+    META["game_ready"] = {"seconds": secs, "high_tris": high_tris, "low_tris": low_tris}
+    label_layout("game_ready", [0.0, 0.55])
+    render("game_ready", all_objs(ob) + [low], direction=(0.6, -1.5, 0.35), lens=60, res=(1600, 900))
+
+
+def shot_boolean():
+    """The Boolean tool: the filter is set into a housing by cutting the source mesh."""
+    clear_scene()
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0.0))
+    housing = bpy.context.active_object
+    housing.scale = (0.8, 0.55, 0.16)
+    bpy.ops.object.transform_apply(scale=True)
+    bm = bmesh.new()
+    bm.from_mesh(housing.data)
+    top = [f for f in bm.faces if f.normal.z > 0.5]
+    bmesh.ops.inset_region(bm, faces=top, thickness=0.07, depth=0.0)
+    bm.to_mesh(housing.data)
+    bm.free()
+    inner_area = 0.66 * 0.41
+    hm = bpy.data.materials.new("FMHousing")
+    principled(hm, (0.05, 0.055, 0.06, 1.0), 0.45)
+    housing.data.materials.append(hm)
+    ob = faces_filter(housing, select=lambda f: f.normal.z > 0.5 and f.calc_area() > inner_area * 0.9)
+    configure(ob, pleat_density=60.0, pleat_depth=0.02, noise_strength=0.0, use_border=True,
+              border_width=0.025, border_front=0.004, border_back=0.03, use_boolean=True,
+              boolean_source='ENVELOPE', boolean_op='DIFFERENCE', cutter_margin=0.012)
+    style_materials(ob.filter_maker, media='PAPER', frame_style='PAINTED')
+    housing.hide_render = False
+    try:
+        housing.hide_set(False)
+    except Exception:
+        pass
+    co = ob.filter_maker.cutter_obj
+    if co is not None:
+        co.hide_render = True
+    META["boolean"] = {"modifier": [m.name for m in housing.modifiers], "error": ob.filter_maker.last_error}
+    render("boolean", [housing] + filter_objs(ob), direction=(0.85, -1.3, 1.15), lens=60, res=(1400, 900))
+
+
+def shot_lite_hero():
+    clear_scene()
+    src = make_mesh("RefPanel", [(0, 0, 0), (1, 0, 0), (1, 0, 0.62), (0, 0, 0.62)], [(0, 1, 2, 3)])
+    ob = faces_filter(src)
+    p = configure(ob, pleat_density=55.0, pleat_depth=0.025, use_border=True, border_width=0.035,
+                  use_thickness=True, thickness=0.0012)
+    style_materials(p)
+    render("hero", filter_objs(ob), direction=(0.95, -1.55, 0.42), lens=55, res=(1800, 1000), close=0.98)
+
+
+if LITE:
+    SHOTS = (("hero", shot_lite_hero), ("sources", shot_sources), ("bevels", shot_bevels),
+             ("topology", shot_topology), ("cylinder", shot_cylinder), ("boolean", shot_boolean))
+else:
+    SHOTS = (("furnace", shot_furnace), ("shapes", shot_shapes), ("materials", shot_materials),
+             ("dirt", shot_dirt), ("faces", shot_faces), ("game_ready", shot_game_ready),
+             ("dusty", shot_hero), ("boolean", shot_boolean), ("cylinder", shot_cylinder),
+             ("box", shot_box), ("topology", shot_topology), ("bevels", shot_bevels),
+             ("borders", shot_borders), ("presets", shot_presets), ("noise", shot_noise),
+             ("angle", shot_angle), ("sources", shot_sources))
+for name, fn in SHOTS:
+    if ONLY and name not in ONLY:
+        continue
     log("\n=== " + name)
     try:
         fn()
