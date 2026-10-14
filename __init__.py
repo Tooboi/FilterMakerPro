@@ -2295,19 +2295,6 @@ def _grille_island(fb, p, comp, W, heights):
             pu = pv / aspect
         if ring > 0.0:
             pu = ring / max(1, round(ring / pu))
-        # the inset frame band: cut along each outline edge moved inward by W
-        for (pt, nn, seg) in lines.values():
-            x0, y0, x1, y1 = seg
-            reach = W + max(pu, pv)
-            flist = list(g2.faces)
-            cc = [f.calc_center_median() for f in flist]
-            dd = _seg_dist2d([c.x for c in cc], [c.y for c in cc], [seg])
-            near = [f for f, d in zip(flist, dd) if d < reach]
-            if not near:
-                continue
-            geom = list({v for f in near for v in f.verts}) + list({e for f in near for e in f.edges}) + near
-            bmesh.ops.bisect_plane(g2, geom=geom, dist=1e-7, plane_co=(pt[0], pt[1], 0.0),
-                                   plane_no=(nn[0], nn[1], 0.0))
         pattern = p.grille_pattern
         smin = min(pu, pv)
         s_half = 0.5 * max(0.0, min(0.9, p.grille_strut)) * smin
@@ -2321,6 +2308,22 @@ def _grille_island(fb, p, comp, W, heights):
         for pt, nn in _grille_lines(pattern, uc, vc, pu, pv, sh, cu, cv, box):
             bmesh.ops.bisect_plane(g2, geom=g2.verts[:] + g2.edges[:] + g2.faces[:], dist=1e-7,
                                    plane_co=(pt[0], pt[1], 0.0), plane_no=(nn[0], nn[1], 0.0))
+        # the inset frame band: cut along each outline edge moved inward by W (after the
+        # pattern cuts, so the faces are small and every one near the edge gets cut)
+        reach = W + max(pu, pv)
+        for (pt, nn, seg) in lines.values():
+            flist = list(g2.faces)
+            if len(lines) <= 24:
+                near = flist
+            else:
+                vlist = list(g2.verts)
+                dv = dict(zip(vlist, _seg_dist2d([v.co.x for v in vlist], [v.co.y for v in vlist], [seg])))
+                near = [f for f in flist if min(dv[v] for v in f.verts) < reach]
+            if not near:
+                continue
+            geom = list({v for f in near for v in f.verts}) + list({e for f in near for e in f.edges}) + near
+            bmesh.ops.bisect_plane(g2, geom=geom, dist=1e-7, plane_co=(pt[0], pt[1], 0.0),
+                                   plane_no=(nn[0], nn[1], 0.0))
         faces = list(g2.faces)
         cents = [f.calc_center_median() for f in faces]
         dist = _seg_dist2d([c.x for c in cents], [c.y for c in cents], segs)
@@ -2520,9 +2523,9 @@ def build_wire_splines(bm, p):
     pos = {}
     nxt = {}
 
-    def point(la, lb, fa, fb_, k):
+    def point(la, lb, fa, fb_, k, fam):
         va, vb = la.vert, lb.vert
-        key = (min(va.index, vb.index), max(va.index, vb.index), k,
+        key = (min(va.index, vb.index), max(va.index, vb.index), fam, k,
                round(min(fa, fb_) * 1e4), round(max(fa, fb_) * 1e4))
         if key not in pos:
             t = (k - fa) / (fb_ - fa)
@@ -2547,7 +2550,7 @@ def build_wire_splines(bm, p):
                     b = (a + 1) % 3
                     fa, fb_ = vals[a], vals[b]
                     if (fa < k) != (fb_ < k):
-                        ends.append(point(tri[a], tri[b], fa, fb_, (fi, k)))
+                        ends.append(point(tri[a], tri[b], fa, fb_, k, fi))
                 if len(ends) == 2 and ends[0] != ends[1]:
                     nxt.setdefault(ends[0], []).append(ends[1])
                     nxt.setdefault(ends[1], []).append(ends[0])
@@ -5348,7 +5351,7 @@ BUILTIN_PRESETS = {
     "Sharp Paper Fold": _mk(pleat_density=60.0, bevel_ridge=0.0, bevel_valley=0.0, bevel_cuts=1,
                             use_thickness=False, thickness=0.0, noise_strength=0.0005,
                             use_hair=False, use_dust=False),
-    "Die-Cut Furnace": _mk(filter_style="SYNTHETIC", frame_style="WHITE_BOARD",
+    "Die-Cut Furnace": _mk(filter_style="HEPA", frame_style="WHITE_BOARD",
                            pleat_density=28.0, pleat_depth=0.012, use_thickness=False, thickness=0.0,
                            bevel_ridge=0.45, bevel_valley=0.35, bevel_cuts=3,
                            noise_strength=0.0006, noise_scale=0.3, noise_depth=1,
@@ -5682,7 +5685,7 @@ def _shape_mesh(shape, o):
 
 def _furnace_settings(p, short):
     """Real-world sizes of a 1 in deep die-cut pleated furnace filter (short = shorter side)."""
-    p.filter_style, p.frame_style = 'SYNTHETIC', 'WHITE_BOARD'
+    p.filter_style, p.frame_style = 'HEPA', 'WHITE_BOARD'
     p.pleat_density, p.pleat_depth = 45.0, 0.0095
     p.use_thickness = False
     p.bevel_ridge, p.bevel_valley, p.bevel_cuts = 0.45, 0.35, 3
