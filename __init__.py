@@ -2139,8 +2139,8 @@ def _grille_open(pattern, x, y, pu, pv, sh, cu, cv):
         ul, ur = pu * (k + m - 1) / 2.0, pu * (k + m + 1) / 2.0
         vb, vt = pv * (k - m - 1) / 2.0, pv * (k - m + 1) / 2.0
         return x - ul > cu and ur - x > cu and y - vb > cv and vt - y > cv
-    du = abs(x / pu - math.floor(x / pu + 0.5) - 0.5) * pu
-    dv = abs(y / pv - math.floor(y / pv + 0.5) - 0.5) * pv
+    du = (0.5 - abs(x / pu - round(x / pu))) * pu     # struts run between the cells, at +-pu/2
+    dv = (0.5 - abs(y / pv - round(y / pv))) * pv
     return du > sh and dv > sh
 
 
@@ -5239,7 +5239,7 @@ class FilterProps(PropertyGroup):
         ('PLEATED', "Low-Poly Pleats", "Keeps the zig-zag silhouette with few polygons; bevels, wear, hair and dust go into the maps"),
         ('FLAT', "Flat Card", "A flat panel and frame; all pleat detail goes into the normal map")], default='PLEATED')
     game_resolution: EnumProperty(name="Texture Size", items=[
-        ('512', "512", ""), ('1024', "1024", ""), ('2048', "2048", ""), ('4096', "4096", "")], default='2048')
+        ('512', "512", ""), ('1024', "1024", ""), ('2048', "2048", ""), ('4096', "4096", "")], default='1024')
     game_maps: EnumProperty(name="Maps", items=GAME_MAPS, options={'ENUM_FLAG'},
                             default={'NORMAL', 'AO', 'COLOR'})
     game_particles: BoolProperty(name="Include Hair & Dust", default=True,
@@ -5878,6 +5878,21 @@ def _split_sheet_uvs(bm, unrolled_period):
             lp[uvl].uv = (uv.x - k * chunk, uv.y + k * (vlen + gap))
 
 
+def _cycles_gpu_ready():
+    """True when the user has a Cycles GPU device switched on in the preferences."""
+    try:
+        cp = bpy.context.preferences.addons["cycles"].preferences
+        if getattr(cp, "compute_device_type", 'NONE') in {'NONE', ''}:
+            return False
+        try:
+            cp.refresh_devices()
+        except Exception:
+            pass
+        return any(d.use and d.type != 'CPU' for d in cp.devices)
+    except Exception:
+        return False
+
+
 def _image_node(nodes, x, y, img, non_color):
     n = nodes.new("ShaderNodeTexImage")
     n.location = (x, y)
@@ -5957,7 +5972,9 @@ class FILTER_OT_game_ready(Operator):
     # -- low poly ---------------------------------------------------------------
     def _build_low(self, ob, p, coll):
         src = json.loads(p.src)
-        lo = _Override(p, bevel_ridge=0.0, bevel_valley=0.0, bevel_cuts=1, face_smooth_cuts=1,
+        # keep the pleat bevel (2 cuts at most): sharp low-poly ridges under rounded high-poly
+        # ridges leave the bake rays nothing to hit there (white streaks along every ridge)
+        lo = _Override(p, bevel_cuts=min(p.bevel_cuts, 2), face_smooth_cuts=1,
                        detail=max(0.5, min(p.detail, 4.0)), mesh_type='QUADS',
                        border_profile='FLAT', border_cuts=1)
         bm = bmesh.new()
@@ -5993,7 +6010,7 @@ class FILTER_OT_game_ready(Operator):
                         fb.free()
                         bpy.data.meshes.remove(tmp)
             for f in bm.faces:
-                f.smooth = p.game_lod == 'FLAT'
+                f.smooth = True          # smooth bake normals: no gaps between the rays at the folds
             name = "%s_low" % ob.name
             old = bpy.data.objects.get(name)
             if old is not None:
@@ -6036,8 +6053,7 @@ class FILTER_OT_game_ready(Operator):
         scene = context.scene
         scene.render.engine = 'CYCLES'
         try:
-            scene.cycles.samples = 32
-            scene.cycles.device = 'CPU'
+            scene.cycles.device = 'GPU' if _cycles_gpu_ready() else 'CPU'
         except Exception:
             pass
         res = int(p.game_resolution)
@@ -6088,6 +6104,13 @@ class FILTER_OT_game_ready(Operator):
             mat.update_tag()
             low.data.update_tag()
             context.view_layer.update()
+            try:
+                # normal / colour / roughness are noise-free: a few samples only anti-alias
+                scene.cycles.samples = {'AO': 24}.get(key, 4)
+                scene.cycles.use_denoising = False
+                scene.cycles.use_adaptive_sampling = False
+            except Exception:
+                pass
             if key == 'NORMAL':
                 res = bpy.ops.object.bake(type='NORMAL', normal_space='TANGENT', **bake_args)
             elif key == 'AO':

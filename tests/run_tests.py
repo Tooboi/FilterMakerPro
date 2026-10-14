@@ -988,6 +988,25 @@ def t_diecut():
         if shape in ('CARTRIDGE', 'BOX'):
             render("12_face_%s" % shape.lower(), [o2, q.border_obj], direction=(1.0, -1.3, 0.8))
     record("die-cut face on cartridge, box wrap, round and back side", not bad, failed=bad)
+    # square pattern: the open share must match a full grid of struts (a strut missing on
+    # one side of each cell, as in the first 0.7.0 build, opens far more of the face)
+    clear_scene()
+    bpy.ops.filter.add_shape(shape='PANEL', width=0.6, height=0.4)
+    o4 = bpy.context.active_object
+    q = o4.filter_maker
+    q.grille_side, q.grille_pattern, q.grille_cells, q.grille_strut = 'FRONT', 'SQUARE', 3, 0.2
+    W4 = q.border_width
+    pts = [Vector((-0.3 + W4 + (0.6 - 2 * W4) * (i + 0.5) / 40, 0.0, W4 + (0.4 - 2 * W4) * (j + 0.5) / 30))
+           for i in range(40) for j in range(30)]
+    best = None
+    for y, d in ((0.5, Vector((0, -1, 0))), (-0.5, Vector((0, 1, 0)))):
+        hits = _first_hits([q.border_obj], [o4], [c + Vector((0, y, 0)) for c in pts], d)
+        f = sum(hits) / len(hits)
+        best = f if best is None else min(best, f)
+    expect = (1.0 - q.grille_strut) ** 2
+    record("square face: full grid of struts", abs(best - expect) < 0.08, open_fraction=round(best, 3),
+           expected=round(expect, 3))
+    render("12_face_square_panel", [o4, q.border_obj], direction=(0.3, -1.6, 0.2))
     # wire on a curve filter
     clear_scene()
     bpy.ops.filter.new_line()
@@ -1035,6 +1054,8 @@ def t_game_ready():
             reds = px[0::4][:: max(1, len(px) // 40000)]
             mean = sum(reds) / len(reds)
             spread = (sum((r - mean) ** 2 for r in reds) / len(reds)) ** 0.5
+        smooth = low is not None and all(pl.use_smooth for pl in low.data.polygons)
+        record("game-ready %s: low poly is smooth-shaded for clean bakes" % lod, smooth)
         record("game-ready %s: low poly, packed UVs, baked maps" % lod,
                'FINISHED' in res and low is not None and tris < high_tris * 0.25 and inside and spread > 0.01,
                seconds=round(time.time() - t0, 1), low_tris=tris, high_tris=high_tris, uvs_in_0_1=inside,
