@@ -6030,9 +6030,11 @@ class FILTER_OT_game_ready(Operator):
         src = json.loads(p.src)
         # keep the pleat bevel (2 cuts at most): sharp low-poly ridges under rounded high-poly
         # ridges leave the bake rays nothing to hit there (white streaks along every ridge)
+        # the die-cut face is baked into the maps, not modelled: a low-poly copy lying exactly
+        # on the high-poly face would black out the AO and costs thousands of triangles
         lo = _Override(p, bevel_cuts=min(p.bevel_cuts, 2), face_smooth_cuts=1,
                        detail=max(0.5, min(p.detail, 4.0)), mesh_type='QUADS',
-                       border_profile='FLAT', border_cuts=1)
+                       border_profile='FLAT', border_cuts=1, grille_pattern='NONE')
         bm = bmesh.new()
         try:
             if p.game_lod == 'PLEATED':
@@ -6138,6 +6140,8 @@ class FILTER_OT_game_ready(Operator):
             ext = max(F, B, p.pleat_depth * 1.2) + hair
         else:
             ext = 0.5 * p.pleat_depth + 3.0 * p.noise_strength + (p.thickness if p.use_thickness else 0.0) + hair
+        if p.use_border and getattr(p, "grille_pattern", 'NONE') != 'NONE':
+            ext = max(ext, max(F, B) + p.board_thickness * 1.5)       # reach the die-cut face
         ext = max(ext, 1e-3)
         for o in context.view_layer.objects:
             if o is not None:
@@ -6148,6 +6152,21 @@ class FILTER_OT_game_ready(Operator):
         context.view_layer.objects.active = low
         bake_args = dict(use_selected_to_active=True, cage_extrusion=ext, max_ray_distance=ext * 2.5,
                          margin=16, use_clear=True)
+        # the low-poly copy must not shadow / occlude the high-poly surface it is baked from
+        vis_keys = ("visible_diffuse", "visible_glossy", "visible_transmission", "visible_volume_scatter",
+                    "visible_shadow")
+        vis = {k: getattr(low, k) for k in vis_keys if hasattr(low, k)}
+        for k in vis:
+            setattr(low, k, False)
+        try:
+            self._bake_maps(context, scene, low, mat, nodes, img_nodes, bake_args)
+        finally:
+            for k, v in vis.items():
+                setattr(low, k, v)
+        self._save_images(images)
+        return images
+
+    def _bake_maps(self, context, scene, low, mat, nodes, img_nodes, bake_args):
         for key, img_node in img_nodes.items():
             # the bake target must be the selected *and* active image node, and the
             # material must be re-evaluated so the bake sees those flags
@@ -6180,8 +6199,6 @@ class FILTER_OT_game_ready(Operator):
                                                   " active" if nodes.active == n else "") for n in nodes)
                 raise RuntimeError("%s bake did not run (%s). Low-poly slots: %s. Nodes: %s" % (
                     key, ", ".join(res), [m.name if m else None for m in low.data.materials], state))
-        self._save_images(images)
-        return images
 
     def _save_images(self, images):
         blend = bpy.data.filepath
