@@ -38,8 +38,10 @@ _KEEP = [None]
 MAX_CUTS = 400
 MAX_INST = 100000
 BOOL_NAME = "Filter Boolean"
-EDITION = "PRO"                     # "LITE" in the free build (tools/build_lite.py)
+# >>> PRO
+EDITION = "PRO"
 _EDITION_KEY = "filter_maker_edition"
+# <<< PRO
 
 # Reserved preview state. Kept initialized even when preview creation fails.
 _ICONS = [None]
@@ -1805,17 +1807,23 @@ def _border_dims(p, small=None):
     if small:
         W = min(W, small * 0.48)
     # A seal past the reference edge keeps the pleat ends inside the frame. The shell
-    # thickness and the wear can push the last pleat slightly past the edge, so the
-    # seal covers those too.
+    # thickness can push the last pleat slightly past the edge, so the seal covers it.
     effective_thickness = p.thickness if getattr(p, "use_thickness", False) else 0.0
+    # >>> PRO
     O = (max(p.border_overhang, 0.0) + max(5e-4, 0.03 * W)
          + effective_thickness + 1.5 * max(p.noise_strength, 0.0))
     fit = (p.pleat_depth + effective_thickness + 1.5 * p.noise_strength) if p.border_fit else 0.0
     F, B = max(fit + p.border_front, 1e-6), max(fit + p.border_back, 1e-6)
+    # --- LITE
+    #| O = max(5e-4, 0.03 * W) + effective_thickness
+    #| fit = p.pleat_depth + effective_thickness
+    #| F = B = fit + W / 3.0               # the frame stands a third of its width above the pleats
+    # <<< PRO
     return W, O, F, B, fit
 
 
 def _border_section(p, W, O, F, B, fit=0.0):
+    # >>> PRO
     prof, r = p.border_profile, max(0.0, p.border_bevel)
     # Chamfer / round only shape the outer edge: never cut into the space the pleats
     # need at the reference edge (height `fit` on both sides).
@@ -1838,6 +1846,9 @@ def _border_section(p, W, O, F, B, fit=0.0):
         r = min(r, (F + B) * 0.6)
         lw = (O + W) * 0.4
         pts = [(-O, -B), (W, -B), (W, F), (-O + lw, F), (-O + lw, F + r), (-O, F + r)]
+    # --- LITE
+    #| pts = [(-O, -B), (W, -B), (W, F), (-O, F)]
+    # <<< PRO
     out = []
     for q in pts:
         if not out or abs(q[0] - out[-1][0]) + abs(q[1] - out[-1][1]) > 1e-9:
@@ -1991,11 +2002,13 @@ def build_border(p, rb):
         fb.free()
         return None
     bmesh.ops.recalc_face_normals(fb, faces=fb.faces[:])
+    # >>> PRO
     caps = getattr(p, "border_caps", 'NONE')
     if caps != 'NONE' and len(loops_out) >= 2:
         _add_end_caps(fb, p, loops_out, caps)
     _add_grille(fb, p, rb, W, F, B)
     _add_pull_tabs(fb, p, rb, W, O, F, B)
+    # <<< PRO
     return fb
 
 
@@ -2861,7 +2874,11 @@ def update_print(obj, p, rb, W, O, F, B):
 
 def _cut_pad(p):
     effective_thickness = p.thickness if getattr(p, "use_thickness", False) else 0.0
+    # >>> PRO
     return p.pleat_depth + effective_thickness + 1.5 * p.noise_strength + 1e-5
+    # --- LITE
+    #| return p.pleat_depth + effective_thickness + 1e-5
+    # <<< PRO
 
 
 def _newell(vs):
@@ -3024,6 +3041,7 @@ def build_cutter(p, src):
 # Regeneration / object children
 # ---------------------------------------------------------------------------
 
+# >>> PRO
 CHILD_ATTRS = ("particles_obj", "hair_obj", "dust_obj", "border_obj", "cutter_obj", "fuzz_obj",
                "wire_obj", "print_obj")
 
@@ -3038,6 +3056,15 @@ _CHILD_SUFFIX = {
     "wire_obj": "_Wire",
     "print_obj": "_Print",
 }
+# --- LITE
+#| CHILD_ATTRS = ("border_obj", "cutter_obj")
+#|
+#|
+#| _CHILD_SUFFIX = {
+#|     "border_obj": "_Border",
+#|     "cutter_obj": "_Cutter",
+#| }
+# <<< PRO
 
 
 def _find_child(obj, attr):
@@ -4711,9 +4738,8 @@ def _sheet_key(p):
 
 
 def _build_sheet(obj, p, src, bm):
-    """Pleated sheet (before wear / thickness). Re-uses the cached copy when nothing
-    that shapes the pleats has changed, so wear, thickness, border and hair / dust
-    edits skip the expensive rebuild."""
+    """Pleated sheet (before thickness). Re-uses the cached copy when nothing that
+    shapes the pleats has changed, so the other edits skip the expensive rebuild."""
     key = _sheet_key(p)
     name = obj.get("fm_sheet_cache")
     cm = bpy.data.meshes.get(name) if name else None
@@ -4777,13 +4803,16 @@ def regenerate(obj):
         t_last = now
 
     try:
+        # >>> PRO
         apply_styles(p)
+        # <<< PRO
         src = json.loads(p.src)
         bm = bmesh.new()
         tm["sheet_cached"] = _build_sheet(obj, p, src, bm)
         tick("sheet_ms")
         if not tm["sheet_cached"] and p.mode == 'FACE':
             tm.update({"face_" + k: round(v, 1) for k, v in _FACE_TIMINGS.items()})
+        # >>> PRO
         segs, W = None, 0.0
         want_masks = p.dirt > 0.0          # the built-in materials read fm_dirt (absent = clean)
         if p.use_border or want_masks:
@@ -4793,8 +4822,14 @@ def regenerate(obj):
                 small = _rb_small(rb)
                 W = _border_dims(p, small)[0] if p.use_border else 0.0
                 segs = _outline_segments(rb, max(W, 0.01 * (small or 1.0)) * 0.05)
+        # --- LITE
+        #| if p.use_border:
+        #|     rb = bmesh.new()
+        #|     build_reference(rb, p, src)
+        # <<< PRO
         tick("reference_ms")
         bm.normal_update()
+        # >>> PRO
         fade = dist = None
         if segs:
             dkey = (_sheet_key(p), round(W, 9), len(bm.verts))
@@ -4821,6 +4856,7 @@ def regenerate(obj):
         tick("wire_ms")
         # bm.copy() keeps the vertex order, so the distances above still line up
         surface = bm.copy() if (p.use_hair or p.use_dust) else None
+        # <<< PRO
         if p.use_thickness and p.thickness > 1e-7 and bm.faces:
             bmesh.ops.solidify(bm, geom=list(bm.faces), thickness=p.thickness)
         bm.normal_update()
@@ -4834,9 +4870,12 @@ def regenerate(obj):
             _style_cutter(p)
         else:
             _remove_child(p, "cutter_obj")
+        # >>> PRO
         if p.fuzz_obj:
             _remove_child(p, "fuzz_obj")
+        # <<< PRO
         tick("cutter_ms")
+        # >>> PRO
         try:
             update_particles(obj, p, surface, dist if p.use_border else None, W)
         except Exception as particle_exc:
@@ -4847,28 +4886,35 @@ def regenerate(obj):
             if surface is not None:
                 surface.free()
         tick("particles_ms")
+        # <<< PRO
         if rb is not None and rb.faces and p.use_border:
             fb = build_border(p, rb)
             if fb is not None:
                 try:
                     apply_border_shading(fb, p)
+                    # >>> PRO
                     if want_masks:
                         _set_frame_dirt(fb, p)
+                    # <<< PRO
                     bob = _write_child(obj, p, "border_obj", "_Border", fb, p.border_material)
                     _apply_uv_space(bob.data, p)
                 finally:
                     fb.free()
             else:
                 _remove_child(p, "border_obj")
+            # >>> PRO
             try:
                 _W, _O, _F, _B, _fit = _border_dims(p, _rb_small(rb))
                 update_print(obj, p, rb, _W, _O, _F, _B)
             except Exception as print_exc:
                 traceback.print_exc()
                 p.last_error = "Printed graphics failed: %s" % print_exc
+            # <<< PRO
         else:
             _remove_child(p, "border_obj")
+            # >>> PRO
             _remove_child(p, "print_obj")
+            # <<< PRO
         tick("border_ms")
         apply_shading(bm, p)
         me = obj.data
@@ -5585,11 +5631,19 @@ def create_filter(context, mode, src, source=None):
         p.is_filter = True
         p.mode = mode
         p.src = json.dumps(src)
+        # >>> PRO
         apply_values(p, DEFAULTS_NORM, sc)
+        # --- LITE
+        #| # sizes follow the source, so a small or a large source gets the same look
+        #| p.pleat_depth, p.height, p.border_width = 0.025 * sc, 1.0 * sc, 0.03 * sc
+        #| p.pleat_density, p.detail = 55.0 / sc, 20.0 / sc
+        # <<< PRO
         p.filter_material = _default_mat("Filter_Material", (0.85, 0.83, 0.75, 1.0))
         p.border_material = _default_mat("Border_Material", (0.25, 0.27, 0.3, 1.0))
+        # >>> PRO
         p.hair_material = _default_mat("Hair_Material", (0.9, 0.9, 0.9, 1.0))
         p.dust_material = _default_mat("Dust_Material", (0.45, 0.4, 0.35, 1.0))
+        # <<< PRO
         if source is not None:
             p.source_obj = source
             # The source mesh is the Boolean target, not the Object-mode cutter.
@@ -6321,6 +6375,33 @@ class FILTER_OT_edit_source_curve(Operator):
             return {'CANCELLED'}
 
 
+class FILTER_OT_apply_curve_edit(Operator):
+    """Leave Edit Mode on the source curve and rebuild the filter from it"""
+    bl_idname = "filter.apply_curve_edit"
+    bl_label = "Apply Curve Edit"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = active_filter(context)
+        return bool(ob and ob.filter_maker.source_obj and ob.filter_maker.source_obj.type == 'CURVE')
+
+    def execute(self, context):
+        ob = active_filter(context)
+        if not ob:
+            return {'CANCELLED'}
+        if context.object and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        refresh_curve_source(ob)
+        regenerate(ob)
+        for item in context.view_layer.objects:
+            if item is not None:
+                item.select_set(False)
+        ob.select_set(True)
+        context.view_layer.objects.active = ob
+        return {'FINISHED'}
+
+
 class FILTER_OT_regenerate(Operator):
     bl_idname = "filter.regenerate"
     bl_label = "Update"
@@ -6533,9 +6614,11 @@ class FILTER_OT_delete(Operator):
             _remove_source_boolean(ob, p)
             for attr in CHILD_ATTRS:
                 _remove_child(p, attr)
+            # >>> PRO
             _remove_lib(p, "hair_lib")
             _remove_lib(p, "dust_lib")
             _remove_scatter_group_if_unused()
+            # <<< PRO
             cache = bpy.data.meshes.get(ob.get("fm_sheet_cache", "") or "")
             me = ob.data
             bpy.data.objects.remove(ob, do_unlink=True)
@@ -6583,7 +6666,11 @@ def active_filter(context):
 def _counts(ob):
     p = ob.filter_maker
     v, f, ev, ef = len(ob.data.vertices), len(ob.data.polygons), 0, 0
+    # >>> PRO
     for attr in ("particles_obj", "border_obj"):
+    # --- LITE
+    #| for attr in ("border_obj",):
+    # <<< PRO
         child = getattr(p, attr)
         if child is not None and child.type == 'MESH':
             ev += len(child.data.vertices)
@@ -6606,7 +6693,9 @@ class FILTER_PT_main(Panel):
         layout = self.layout
         col = layout.column(align=True)
         col.operator("filter.new_line", icon=ic('CURVE_PATH'))
+        # >>> PRO
         col.operator_menu_enum("filter.add_shape", "shape", text="Add Filter Shape", icon=ic('MESH_GRID'))
+        # <<< PRO
         obj = context.active_object
         if obj and obj.type in {'MESH', 'CURVE'}:
             col.operator("filter.from_selection", text="From Curve / Edges", icon=ic('CURVE_DATA')).source = 'CURVE'
@@ -6621,22 +6710,32 @@ class FILTER_PT_main(Panel):
             return
         p = ob.filter_maker
         if p.source_obj is not None and p.source_obj.type == 'CURVE' and p.mode == 'CURVE':
-            row = layout.row(align=True)
-            row.label(text="Live curve guide: " + p.source_obj.name, icon=ic('CURVE_DATA'))
-            row.operator("filter.edit_source_curve", text="Edit", icon=ic('GREASEPENCIL'))
+            if p.source_obj.mode == 'EDIT':
+                layout.operator("filter.apply_curve_edit", icon=ic('CHECKMARK'))
+            else:
+                row = layout.row(align=True)
+                row.label(text="Curve guide: " + p.source_obj.name, icon=ic('CURVE_DATA'))
+                row.operator("filter.edit_source_curve", text="Edit", icon=ic('GREASEPENCIL'))
         layout.separator()
         row = layout.row(align=True)
         row.prop(p, "live", text="Live", toggle=True, icon=ic('PLAY'))
         row.operator("filter.regenerate", text="", icon=ic('FILE_REFRESH'))
+        # >>> PRO
         row.operator("filter.randomize", text="Randomize", icon=ic('FORCE_VORTEX'))
+        # <<< PRO
         v, f, ev, ef = _counts(ob)
         box = layout.box()
         box.label(text="Verts %s   Faces %s" % (format(v, ","), format(f, ",")), icon=ic('MESH_DATA'))
+        # >>> PRO
         if ev:
             box.label(text="+ border / emitter: %s verts" % format(ev, ","), icon=ic('MOD_SOLIDIFY'))
         if p.use_hair or p.use_dust:
             box.label(text="Instances: hair %s   dust %s" % (format(p.hair_count, ","), format(p.dust_count, ",")),
                       icon=ic('PARTICLES'))
+        # --- LITE
+        #| if ev:
+        #|     box.label(text="+ border: %s verts" % format(ev, ","), icon=ic('MOD_SOLIDIFY'))
+        # <<< PRO
         if p.last_error:
             layout.label(text="Error: " + p.last_error, icon=ic('ERROR'))
 
@@ -6804,6 +6903,7 @@ class FILTER_PT_border(FILTER_SubPanel, Panel):
             row.alignment = 'CENTER'
             row.template_icon(icon_value=icon_id, scale=7.0)
         layout.label(text="white = pleats   orange = border   grey = bounds")
+        # >>> PRO
         layout.prop(p, "border_profile", expand=True)
         c = layout.column(align=True)
         c.label(text="Inward / outward")
@@ -6825,6 +6925,11 @@ class FILTER_PT_border(FILTER_SubPanel, Panel):
         sub.active = p.border_caps != 'NONE'
         sub.prop(p, "border_cap_hole", slider=True)
         c.separator()
+        # --- LITE
+        #| c = layout.column(align=True)
+        #| c.prop(p, "border_width", text="Width")
+        #| c.separator()
+        # <<< PRO
         c.label(text="Shading")
         c.prop(p, "border_smooth")
         c.prop(p, "border_auto_smooth")
@@ -7024,6 +7129,7 @@ class FILTER_PT_materials(FILTER_SubPanel, Panel):
             return
         layout = self.layout
         col = layout.column(align=True)
+        # >>> PRO
         col.prop(p, "filter_style")
         if p.filter_style == 'CUSTOM':
             col.template_ID(p, "filter_material", new="material.new")
@@ -7036,11 +7142,17 @@ class FILTER_PT_materials(FILTER_SubPanel, Panel):
         row = col.row(align=True)
         row.active = p.filter_style != 'CUSTOM' or p.frame_style != 'CUSTOM'
         row.prop(p, "dirt", slider=True)
+        # --- LITE
+        #| col.template_ID(p, "filter_material", new="material.new")
+        #| if p.use_border:
+        #|     col.template_ID(p, "border_material", new="material.new")
+        # <<< PRO
         col.separator()
         col.prop(p, "uv_mode")
         sub = col.row(align=True)
         sub.active = p.uv_mode == 'WORLD'
         sub.prop(p, "uv_tile")
+        # >>> PRO
         if p.use_hair:
             layout.template_ID(p, "hair_material", new="material.new")
         if p.use_dust:
@@ -7048,6 +7160,7 @@ class FILTER_PT_materials(FILTER_SubPanel, Panel):
         if p.use_hair or p.use_dust:
             if p.use_dust:
                 layout.label(text="The dust material is shared by all filters", icon=ic('LINKED'))
+        # <<< PRO
 
 
 class FILTER_PT_game(FILTER_SubPanel, Panel):
@@ -7262,10 +7375,12 @@ def _icon_shapes(name):
     if name == 'main':
         S.append(('stroke', [(0.12, 0.18), (0.88, 0.18), (0.88, 0.82), (0.12, 0.82)], True))
         S.append(('stroke', _ic_zig(3, 0.24, 0.76, 0.32, 0.68), False))
+    # >>> PRO
     elif name == 'presets':
         for y, k in ((0.75, 0.30), (0.5, 0.66), (0.25, 0.44)):
             S.append(('stroke', [(0.12, y), (0.88, y)], False))
             S.append(('ring', (k, y, 0.085)))
+    # <<< PRO
     elif name == 'pleats':
         S.append(('stroke', _ic_zig(3), False))
         S.append(('stroke', [(0.12, 0.2), (0.88, 0.2)], False, 0.45))
@@ -7279,6 +7394,7 @@ def _icon_shapes(name):
         for k in range(3):                      # hatching on the shadow side
             y = 0.34 + k * 0.16
             S.append(('stroke', [(0.66, y - 0.05), (0.78, y + 0.05)], False, 0.75))
+    # >>> PRO
     elif name == 'wear':
         rng = random.Random(7)
         pts = [(0.1 + 0.8 * i / 14.0, 0.5 + (0.16 if i % 2 else -0.16) * (0.5 + rng.random() * 0.6))
@@ -7287,10 +7403,12 @@ def _icon_shapes(name):
         S.append(('dot', (0.28, 0.82, 0.04)))
         S.append(('dot', (0.66, 0.18, 0.035)))
         S.append(('dot', (0.80, 0.80, 0.03)))
+    # <<< PRO
     elif name == 'border':
         S.append(('stroke', [(0.1, 0.18), (0.24, 0.18), (0.24, 0.82), (0.1, 0.82)], True))
         S.append(('stroke', [(0.76, 0.18), (0.9, 0.18), (0.9, 0.82), (0.76, 0.82)], True))
         S.append(('stroke', _ic_zig(2, 0.24, 0.76, 0.34, 0.66), False))
+    # >>> PRO
     elif name == 'hair':
         for k, (x, bend) in enumerate(((0.28, -0.12), (0.5, 0.1), (0.72, -0.06))):
             pts = []
@@ -7299,12 +7417,15 @@ def _icon_shapes(name):
                 pts.append((x + bend * t * t + 0.05 * math.sin(t * 7.0 + k), 0.16 + 0.68 * t))
             S.append(('stroke', pts, False))
         S.append(('stroke', [(0.14, 0.14), (0.86, 0.14)], False))
+    # <<< PRO
+    # >>> PRO
     elif name == 'dust':
         for x, y, r in ((0.3, 0.68, 0.075), (0.62, 0.74, 0.05), (0.48, 0.42, 0.095),
                         (0.76, 0.40, 0.04), (0.24, 0.30, 0.045), (0.68, 0.18, 0.06)):
             S.append(('ring', (x, y, r)))
         S.append(('dot', (0.84, 0.62, 0.03)))
         S.append(('dot', (0.14, 0.52, 0.025)))
+    # <<< PRO
     elif name == 'boolean':
         S.append(('stroke', [(0.12, 0.36), (0.6, 0.36), (0.6, 0.86), (0.12, 0.86)], True))
         S.append(('stroke', _ic_circle(0.62, 0.38, 0.25), True))
@@ -7321,8 +7442,12 @@ def _icon_shapes(name):
     return S
 
 
+# >>> PRO
 ICON_NAMES = ('main', 'presets', 'pleats', 'bevel', 'shading', 'wear', 'border',
               'hair', 'dust', 'boolean', 'materials', 'finish')
+# --- LITE
+#| ICON_NAMES = ('main', 'pleats', 'bevel', 'shading', 'border', 'boolean', 'materials', 'finish')
+# <<< PRO
 
 
 def _render_icon(name, size=32, ss=2):
@@ -7454,8 +7579,12 @@ def border_icon(p):
     if pv is None:
         return 0
     W, O, F, B, fit = _border_dims(p)
+    # >>> PRO
     key = (p.border_profile, round(W, 6), round(O, 6), round(F, 6), round(B, 6), round(fit, 6),
            round(p.border_bevel, 6), int(p.border_cuts), round(p.pleat_depth, 6),
+    # --- LITE
+    #| key = (round(W, 6), round(O, 6), round(F, 6), round(B, 6), round(fit, 6), round(p.pleat_depth, 6),
+    # <<< PRO
            round(p.pleat_density, 3), round(p.pleat_phase, 3), round(p.bevel_ridge, 3),
            round(p.bevel_valley, 3), int(p.bevel_cuts))
     if _pv_key.get("border") != key:
@@ -7512,13 +7641,21 @@ def _particle_footer(layout, p, coll, count, noun, kind):
         col.label(text="On: %s  (modifier: %s)" % (p.particles_obj.name, SCATTER_MOD), icon=ic('MODIFIER'))
 
 
-classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_add_shape, FILTER_OT_from_selection, FILTER_OT_edit_source_curve, FILTER_OT_regenerate,
+# >>> PRO
+classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_add_shape, FILTER_OT_from_selection, FILTER_OT_edit_source_curve,
+           FILTER_OT_apply_curve_edit, FILTER_OT_regenerate,
            FILTER_OT_randomize, FILTER_OT_use_reference, FILTER_OT_preset_apply,
            FILTER_OT_preset_save, FILTER_OT_preset_update, FILTER_OT_preset_delete,
            FILTER_OT_finish, FILTER_OT_delete, FILTER_PT_main, FILTER_PT_presets,
            FILTER_PT_pleats, FILTER_PT_bevel, FILTER_PT_shading, FILTER_PT_wear,
            FILTER_PT_border, FILTER_PT_diecut, FILTER_PT_hair, FILTER_PT_dust, FILTER_PT_boolean,
            FILTER_PT_materials, FILTER_PT_game, FILTER_OT_game_ready, FILTER_PT_actions)
+# --- LITE
+#| classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_from_selection, FILTER_OT_edit_source_curve,
+#|            FILTER_OT_apply_curve_edit, FILTER_OT_regenerate, FILTER_OT_use_reference, FILTER_OT_finish,
+#|            FILTER_OT_delete, FILTER_PT_main, FILTER_PT_pleats, FILTER_PT_bevel, FILTER_PT_shading,
+#|            FILTER_PT_border, FILTER_PT_boolean, FILTER_PT_materials, FILTER_PT_actions)
+# <<< PRO
 
 
 # ---------------------------------------------------------------------------
@@ -7526,13 +7663,15 @@ classes = (FilterProps, FILTER_OT_new_line, FILTER_OT_add_shape, FILTER_OT_from_
 # ---------------------------------------------------------------------------
 
 def _teardown():
-    """Unregister classes, properties, previews and stale source-sync handlers."""
+    """Unregister classes, properties and previews."""
+    # >>> PRO
     for handler in list(bpy.app.handlers.depsgraph_update_post):
         if getattr(handler, "__name__", "") == "_sync_curve_sources":
             try:
                 bpy.app.handlers.depsgraph_update_post.remove(handler)
             except Exception:
                 pass
+    # <<< PRO
     if _pcoll[0] is not None:
         try:
             bpy.utils.previews.remove(_pcoll[0])
@@ -7555,8 +7694,12 @@ def _teardown():
         except Exception:
             pass
 
+    # >>> PRO
     for owner, attr in ((bpy.types.WindowManager, "filter_maker_preset"),
                         (bpy.types.Object, "filter_maker")):
+    # --- LITE
+    #| for owner, attr in ((bpy.types.Object, "filter_maker"),):
+    # <<< PRO
         try:
             if hasattr(owner, attr):
                 delattr(owner, attr)
@@ -7564,27 +7707,37 @@ def _teardown():
             pass
 
 
+# >>> PRO
 def _edition_conflict():
     """Pro and Lite share the same data (so files open in either); only one may be
     enabled at a time."""
     other = bpy.app.driver_namespace.get(_EDITION_KEY)
     if other and other[1] != __name__:
         return other[0]
+    # Lite is self-contained and does not announce itself: recognise its main panel
+    panel = getattr(bpy.types, "FILTER_PT_main", None)
+    if panel is not None and "Lite" in getattr(panel, "bl_label", ""):
+        return "LITE"
     return None
+# <<< PRO
 
 
 def register():
+    # >>> PRO
     other = _edition_conflict()
     if other:
         raise RuntimeError("Filter Maker %s is already enabled. Disable it before enabling Filter Maker %s."
                            % (other.title(), EDITION.title()))
+    # <<< PRO
     _teardown()
     try:
         # Register the property group and pointer before any panel can poll/draw.
         bpy.utils.register_class(FilterProps)
         bpy.types.Object.filter_maker = PointerProperty(type=FilterProps)
+        # >>> PRO
         bpy.types.WindowManager.filter_maker_preset = EnumProperty(
             name="Preset", items=preset_items, update=_preset_changed)
+        # <<< PRO
         for cls in classes:
             if cls is not FilterProps:
                 bpy.utils.register_class(cls)
@@ -7594,12 +7747,14 @@ def register():
         _pv_key.clear()
         for name in ICON_NAMES:
             art_icon(name)
+        # >>> PRO
         # One persistent callback makes curve-based filters follow source edits.
         for handler in list(bpy.app.handlers.depsgraph_update_post):
             if getattr(handler, "__name__", "") == "_sync_curve_sources":
                 bpy.app.handlers.depsgraph_update_post.remove(handler)
         bpy.app.handlers.depsgraph_update_post.append(_sync_curve_sources)
         bpy.app.driver_namespace[_EDITION_KEY] = (EDITION, __name__)
+        # <<< PRO
     except Exception:
         traceback.print_exc()
         _teardown()
@@ -7608,9 +7763,11 @@ def register():
 
 def unregister():
     _teardown()
+    # >>> PRO
     other = bpy.app.driver_namespace.get(_EDITION_KEY)
     if other and other[1] == __name__:
         del bpy.app.driver_namespace[_EDITION_KEY]
+    # <<< PRO
 
 
 if __name__ == "__main__":

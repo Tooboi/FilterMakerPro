@@ -214,7 +214,7 @@ Restart Blender and enable the add-on. After pulling changes, use *Reload Script
 | I want… | Do this |
 |---|---|
 | **A ready-made filter** | Click **Add Filter Shape** and pick Panel, Round Panel, Cartridge, V-Bank, Box Wrap or Die-Cut Furnace. |
-| **A flat strip / quick test** | Click **New Filter Line**. An editable curve appears at the 3D cursor; click **Edit** next to *Live curve guide* to reshape it, and the filter follows. |
+| **A flat strip / quick test** | Click **New Filter Line**. An editable curve appears at the 3D cursor; click **Edit** next to *Curve guide* to reshape it, and the filter follows (or click **Apply Curve Edit** to finish). |
 | **A filter along a path or ring** | Select a curve (e.g. a Bézier circle) → **From Curve / Edges**. Set **Height** and **Height Direction** (X, Y, Z). |
 | **A filter that fills a shape** | Select a mesh, go to Edit Mode, select faces → **From Faces**. Adjacent faces become one continuous sheet. |
 | **A filter from a wire outline** | Select mesh edges in Edit Mode → **From Curve / Edges**. |

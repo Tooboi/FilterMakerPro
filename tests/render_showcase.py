@@ -111,6 +111,8 @@ def configure(ob, **values):
     p = ob.filter_maker
     p.live = False
     for k, v in values.items():
+        if LITE and not hasattr(p, k):          # Lite has only its own settings
+            continue
         setattr(p, k, v)
     p.live = True
     fm.regenerate(ob)

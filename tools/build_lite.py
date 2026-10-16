@@ -2,16 +2,22 @@
 
     python tools/build_lite.py [output_dir]          (default: dist/FilterMakerLite)
 
-Lite keeps: every source (new line, curve, edges, faces), pleat shaping, bevel,
-shading, topology and a flat border (width only). Pro-only code is replaced by
-small stubs, so it is not in the Lite file at all (and Lite never advertises Pro):
-  wear (Clouds displace), hair & dust, border profiles / overhang / front-back,
-  die-cut face / wire / print, materials, game-ready and presets.
-Lite keeps the Boolean tool (cutting the source shape), which is needed for clean results.
-Lite uses the same scene data as Pro, so a file made with Lite opens in Pro with
-all its settings. Only one edition can be enabled at a time.
+Lite is a self-contained add-on. Its code holds only the features it exposes:
+every source (new line, curve, mesh edges, faces), pleat shaping, pleat bevel,
+shading, topology, UVs, a flat border, the Boolean tool and the material slots.
+Nothing else is in the file: Pro-only code is cut out, not disabled.
+
+How the Pro source is turned into Lite:
+  1. Marked blocks:   # >>> PRO ... # <<< PRO   are removed. A block may hold a Lite
+     alternative after   # --- LITE   as lines starting with   #|   (uncommented here).
+  2. FilterProps keeps only the properties listed in LITE_PROPS.
+  3. Every top-level function, class and constant that nothing references any more is
+     removed (repeated until nothing changes).
+  4. The result is checked: it must compile, every name must be defined, no removed
+     property / operator may be referenced and no Pro feature words may remain.
 """
 import ast
+import builtins
 import os
 import re
 import shutil
@@ -20,200 +26,246 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "__init__.py")
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "dist", "FilterMakerLite")
-# Lite has no upgrade prompts in Blender's UI: the Blender Extensions platform does not allow
-# promoting commercial versions inside the add-on (Terms of Service, section 6).
+
+LITE_PROPS = {
+    "is_filter", "mode", "src", "live", "last_error", "source_obj",
+    "use_thickness", "thickness", "pleat_depth", "pleat_density", "pleat_phase", "detail", "height",
+    "height_dir", "pleat_angle", "mesh_type", "face_smooth", "face_smooth_factor", "face_smooth_cuts",
+    "bevel_ridge", "bevel_valley", "bevel_cuts", "smooth", "auto_smooth", "auto_smooth_angle",
+    "use_border", "border_width", "border_smooth", "border_auto_smooth", "border_auto_smooth_angle",
+    "use_boolean", "boolean_source", "boolean_obj", "boolean_modifier_name", "boolean_op", "boolean_solver",
+    "cutter_margin", "show_cutter",
+    "uv_mode", "uv_tile", "filter_material", "border_material", "border_obj", "cutter_obj",
+}
+# words that must not appear anywhere in the Lite file (case-insensitive, whole words)
+FORBIDDEN = ("hair", "dust", "noise", "wear", "grille", "wire", "scatter", "particle", "particles",
+             "preset", "presets", "dirt", "game", "Pro", "edition", "upgrade", "overhang", "chamfer",
+             "lip", "die-cut", "furnace", "cartridge", "randomize")
+# words allowed in these exact contexts (Blender API names etc.)
+ALLOWED_CONTEXT = ("show_wire", "wireframe", "WIREFRAME", "'WIRE'")
 
 src = open(SRC, encoding="utf-8").read()
 
 
-def rep(old, new, count=1):
-    global src
-    n = src.count(old)
-    if n != count:
-        raise SystemExit("build_lite: expected %d match(es), found %d for:\n%s" % (count, n, old[:200]))
-    src = src.replace(old, new)
+def fail(msg):
+    raise SystemExit("build_lite: " + msg)
 
 
-# ---- identity ---------------------------------------------------------------
-rep('"name": "Filter Maker Pro",', '"name": "Filter Maker Lite",')
+# ---- 1. marked blocks --------------------------------------------------------
+out, mode = [], None
+for n, line in enumerate(src.split("\n"), 1):
+    tag = line.strip()
+    if tag == "# >>> PRO":
+        if mode is not None:
+            fail("nested PRO block at line %d" % n)
+        mode = "pro"
+        continue
+    if tag == "# --- LITE":
+        if mode != "pro":
+            fail("LITE part outside a PRO block at line %d" % n)
+        mode = "lite"
+        continue
+    if tag == "# <<< PRO":
+        if mode is None:
+            fail("unmatched end of PRO block at line %d" % n)
+        mode = None
+        continue
+    if mode == "pro":
+        continue
+    if mode == "lite":
+        m = re.match(r"^(\s*)#\| ?(.*)$", line)
+        if not m:
+            if tag:
+                fail("LITE line must start with '#|' at line %d" % n)
+            out.append("")
+            continue
+        out.append(m.group(1) + m.group(2))
+        continue
+    out.append(line)
+if mode is not None:
+    fail("unterminated PRO block")
+src = "\n".join(out)
+
+# ---- identity ----------------------------------------------------------------
+src = src.replace('"name": "Filter Maker Pro",', '"name": "Filter Maker Lite",', 1)
 src = re.sub(r'"description": "[^"]*",',
              '"description": "Free pleated filter generator: line, curve, edge and face sources, '
-             'pleat shaping, pleat bevel and a clean border.",', src, count=1)
-rep('EDITION = "PRO" ', 'EDITION = "LITE"')
+             'pleat shaping, a clean border and the Boolean tool.",', src, count=1)
 src = re.sub(r'bl_label = "Filter Maker Pro  ([0-9.]+)"', r'bl_label = "Filter Maker Lite  \1"', src, count=1)
 
-# ---- replace Pro-only functions with stubs ----------------------------------
-PRO_ONLY = "Not available in Filter Maker Lite."
-STUBS = {
-    "apply_noise": "return",
-    "update_particles": ("_remove_child(p, \"particles_obj\")\n"
-                         "_remove_lib(p, \"hair_lib\")\n"
-                         "_remove_lib(p, \"dust_lib\")\n"
-                         "p.hair_count = p.dust_count = 0"),
-    "refresh_scatter": "return",
-    "sync_scatter": "return None",
-    "_build_scatter": "raise RuntimeError(%r)" % PRO_ONLY,
-    "_hair_tubes": "raise RuntimeError(%r)" % PRO_ONLY,
-    "_scatter_group": "raise RuntimeError(%r)" % PRO_ONLY,
-    "_build_hair_lib": "raise RuntimeError(%r)" % PRO_ONLY,
-    "_build_dust_lib": "raise RuntimeError(%r)" % PRO_ONLY,
-    "_dust_mesh_piece": "raise RuntimeError(%r)" % PRO_ONLY,
-    "_lint_curve": "raise RuntimeError(%r)" % PRO_ONLY,
-    "_strand_points": "raise RuntimeError(%r)" % PRO_ONLY,
-    "_sync_lib": "raise RuntimeError(%r)" % PRO_ONLY,
-    "save_preset": "raise RuntimeError(%r)" % PRO_ONLY,
-    "style_material": "return None",
-    "_add_end_caps": "return",
-    "_add_grille": "return",
-    "_add_pull_tabs": "return",
-    "update_wire": "_remove_child(p, \"wire_obj\")",
-    "update_print": "_remove_child(p, \"print_obj\")",
-}
-# Pro-only definitions dropped from the Lite file entirely
-REMOVE = {"_build_media", "_build_frame", "FILTER_OT_game_ready", "FILTER_PT_game", "_realized_copy",
-          "_split_sheet_uvs", "_Override", "_bm_to_object", "_game_collection", "_image_node",
-          "FILTER_OT_add_shape", "_shape_mesh", "_grille_island", "_grille_lines", "_grille_open",
-          "_seg_dist2d", "_islands", "_outline_frames", "_tab_sides", "_plate", "build_wire_splines",
-          "_curve_child", "wire_material", "_text_shape", "_auto_size_label", "print_material",
-          "build_print", "_print_strip", "_furnace_settings", "FILTER_PT_diecut"}
+
+# ---- 2. FilterProps: Lite properties only ------------------------------------
+def drop_lines(text, spans):
+    lines = text.split("\n")
+    for a, b in sorted(spans, reverse=True):
+        del lines[a:b]
+    return "\n".join(lines)
+
+
 tree = ast.parse(src)
-lines = src.split("\n")
 spans = []
 for node in tree.body:
-    if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in REMOVE:
-        start = node.lineno - 1 - len(node.decorator_list)
-        spans.append((start, node.end_lineno, "-" + node.name))
+    if isinstance(node, ast.ClassDef) and node.name == "FilterProps":
+        for st in node.body:
+            if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name) \
+                    and st.target.id not in LITE_PROPS:
+                spans.append((st.lineno - 1, st.end_lineno))
+src = drop_lines(src, spans)
+
+
+# ---- 3. remove everything nothing refers to -----------------------------------
+def top_names(node):
+    if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+        return {node.name}
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        return {t.id for t in targets if isinstance(t, ast.Name)}
+    return set()
+
+
+def used_names(node):
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name):
+            out.add(n.id)
+        elif isinstance(n, ast.Attribute):
+            out.add(n.attr)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", n.value))
+    return out
+
+
+KEEP_ALWAYS = {"bl_info", "register", "unregister", "classes"}
+for _round in range(50):
+    tree = ast.parse(src)
+    defs = {}
+    for node in tree.body:
+        for nm in top_names(node):
+            defs.setdefault(nm, []).append(node)
+    refs = {}
+    for node in tree.body:
+        names = top_names(node)
+        u = used_names(node)
+        if names:
+            for nm in names:
+                refs.setdefault(nm, set()).update(u - {nm})
+        else:
+            refs.setdefault("<module>", set()).update(u)
+    live = set(KEEP_ALWAYS) | {"<module>"}
+    stack = list(live)
+    while stack:
+        nm = stack.pop()
+        for r in refs.get(nm, ()):
+            if r in defs and r not in live:
+                live.add(r)
+                stack.append(r)
+    dead = []
+    for node in tree.body:
+        names = top_names(node)
+        if names and not (names & live):
+            dead.append((node.lineno - 1 - len(getattr(node, "decorator_list", [])), node.end_lineno))
+    if not dead:
+        break
+    src = drop_lines(src, dead)
+# imports nothing uses any more
+for _round in range(3):
+    tree = ast.parse(src)
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    edits = []
+    for node in tree.body:
+        if not isinstance(node, (ast.Import, ast.ImportFrom)) or node.lineno != node.end_lineno \
+                and isinstance(node, ast.Import):
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            keep = [a for a in node.names if (a.asname or a.name).split(".")[0] in used
+                    or (isinstance(node, ast.Import) and "." in a.name)]
+            if len(keep) == len(node.names):
+                continue
+            if keep:
+                node.names = keep
+                edits.append((node.lineno - 1, node.end_lineno, ast.unparse(node)))
+            else:
+                edits.append((node.lineno - 1, node.end_lineno, None))
+    if not edits:
+        break
+    lines = src.split("\n")
+    for a, b2, text in sorted(edits, reverse=True):
+        lines[a:b2] = [text] if text else []
+    src = "\n".join(lines)
+
+# comment blocks about removed features (section headers, notes) go too
+_forbid = re.compile(r"(?<![A-Za-z])(%s)(?![A-Za-z])" % "|".join(re.escape(w) for w in FORBIDDEN if w != "Pro"),
+                     re.I)
+lines, out_lines, i = src.split("\n"), [], 0
+while i < len(lines):
+    if lines[i].lstrip().startswith("#"):
+        j = i
+        while j < len(lines) and lines[j].lstrip().startswith("#"):
+            j += 1
+        block = lines[i:j]
+        if not any(_forbid.search(l) or re.search(r"(?<![A-Za-z])Pro(?![A-Za-z])", l) for l in block):
+            out_lines += block
+        i = j
         continue
-    if isinstance(node, ast.FunctionDef) and node.name in STUBS:
-        first = node.body[0]
-        start = first.lineno - 1                       # first body line (0-based)
-        if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) \
-                and isinstance(first.value.value, str):
-            start = first.end_lineno                   # keep the docstring
-        spans.append((start, node.end_lineno, node.name))
-missing = (set(STUBS) | {"-" + n for n in REMOVE}) - {s[2] for s in spans}
-if missing:
-    raise SystemExit("build_lite: functions not found: %s" % ", ".join(sorted(missing)))
-for start, end, name in sorted(spans, reverse=True):
-    if name.startswith("-"):
-        lines[start:end] = []
-        continue
-    body = ["    # Filter Maker Pro only (removed from the Lite build)"]
-    body += ["    " + ln for ln in STUBS[name].split("\n")]
-    lines[start:end] = body
-src = "\n".join(lines)
+    out_lines.append(lines[i])
+    i += 1
+src = "\n".join(out_lines)
+src = re.sub(r"\n{4,}", "\n\n\n", src)
 
-# ---- Pro settings are switched off whenever Lite rebuilds a filter ------------
-rep('''def regenerate(obj):''', '''_LITE_OFF = (("use_hair", False), ("use_dust", False),
-             ("noise_strength", 0.0), ("border_profile", 'FLAT'), ("border_overhang", 0.0),
-             ("border_caps", 'NONE'), ("filter_style", 'CUSTOM'), ("frame_style", 'CUSTOM'),
-             ("dirt", 0.0), ("grille_pattern", 'NONE'), ("use_wire", False), ("pull_tabs", 0),
-             ("use_print", False))
-
-
-def _lite_gate(p):
-    """Lite: turn off Pro-only settings (a filter made in Pro keeps its pleats, border
-    and boolean, without wear, hair, dust or border styles)."""
-    prev = _busy[0]
-    _busy[0] = True
-    try:
-        for key, value in _LITE_OFF:
-            if getattr(p, key) != value:
-                setattr(p, key, value)
-    finally:
-        _busy[0] = prev
-
-
-def regenerate(obj):''')
-rep('''    p.last_error = ""
-    bm = rb = None
-    tm = {}''', '''    p.last_error = ""
-    _lite_gate(p)
-    bm = rb = None
-    tm = {}''')
-
-# ---- UI ---------------------------------------------------------------------
-rep('''
-        col.operator_menu_enum("filter.add_shape", "shape", text="Add Filter Shape", icon=ic('MESH_GRID'))''', '')
-rep('''        c.label(text="End caps (rings, cylinders)")
-        c.prop(p, "border_caps", text="")
-        sub = c.row(align=True)
-        sub.active = p.border_caps != 'NONE'
-        sub.prop(p, "border_cap_hole", slider=True)
-        c.separator()
-''', '')
-rep('''        col = layout.column(align=True)
-        col.prop(p, "filter_style")
-        if p.filter_style == 'CUSTOM':
-            col.template_ID(p, "filter_material", new="material.new")
-        if p.use_border:
-            col.separator()
-            col.prop(p, "frame_style")
-            if p.frame_style == 'CUSTOM':
-                col.template_ID(p, "border_material", new="material.new")
-        col.separator()
-        row = col.row(align=True)
-        row.active = p.filter_style != 'CUSTOM' or p.frame_style != 'CUSTOM'
-        row.prop(p, "dirt", slider=True)
-        col.separator()''', '''        col = layout.column(align=True)
-        col.template_ID(p, "filter_material", new="material.new")
-        if p.use_border:
-            col.template_ID(p, "border_material", new="material.new")
-        col.separator()''')
-rep('''        row.operator("filter.randomize", text="Randomize", icon=ic('FORCE_VORTEX'))
-''', '')
-rep('''        layout.prop(p, "border_profile", expand=True)
-        c = layout.column(align=True)
-        c.label(text="Inward / outward")
-        c.prop(p, "border_width", text="Width (inward)")
-        c.prop(p, "border_overhang", text="Overhang (outward)")
-        if p.border_profile != 'FLAT':
-            c.prop(p, "border_bevel", text="Lip Step" if p.border_profile == 'LIP' else "Bevel Size")
-            if p.border_profile == 'ROUND':
-                c.prop(p, "border_cuts")
-        c = layout.column(align=True)
-        c.label(text="Front / back")
-        c.prop(p, "border_fit")
-        c.prop(p, "border_front")
-        c.prop(p, "border_back")
-        c.separator()''', '''        c = layout.column(align=True)
-        c.prop(p, "border_width", text="Width")
-        c.separator()''')
-
-UPSELL = ''
-
-rep('''
-
-def _teardown():''', UPSELL + '''
-
-def _teardown():''')
-
-# classes: drop Pro panels / operators, add the upsell panel
-m = re.search(r"classes = \((.*?)\)\n", src, re.S)
-names = [n.strip() for n in m.group(1).replace("\n", " ").split(",") if n.strip()]
-drop = {"FILTER_PT_presets", "FILTER_PT_wear", "FILTER_PT_hair", "FILTER_PT_dust",
-        "FILTER_PT_game", "FILTER_OT_game_ready", "FILTER_OT_add_shape", "FILTER_PT_diecut",
-        "FILTER_OT_preset_apply", "FILTER_OT_preset_save", "FILTER_OT_preset_update",
-        "FILTER_OT_preset_delete", "FILTER_OT_randomize"}
-unknown = drop - set(names)
-if unknown:
-    raise SystemExit("build_lite: classes not found: %s" % ", ".join(sorted(unknown)))
-keep = [n for n in names if n not in drop]
-src = src[:m.start()] + "classes = (" + ", ".join(keep) + ")\n" + src[m.end():]
-# the upsell panel is defined after `classes`; move the tuple below it
-m = re.search(r"classes = \(.*?\)\n", src, re.S)
-tuple_text = m.group(0)
-src = src[:m.start()] + src[m.end():]
-rep('''
-
-def _teardown():''', "\n\n" + tuple_text + '''
-
-def _teardown():''')
-
+# ---- 4. checks ------------------------------------------------------------------
 compile(src, "FilterMakerLite/__init__.py", "exec")
+tree = ast.parse(src)
+defined = set(dir(builtins))
+for n in ast.walk(tree):
+    if isinstance(n, (ast.FunctionDef, ast.ClassDef)):
+        defined.add(n.name)
+    elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+        defined.add(n.id)
+    elif isinstance(n, ast.arg):
+        defined.add(n.arg)
+    elif isinstance(n, (ast.Import, ast.ImportFrom)):
+        for a in n.names:
+            defined.add((a.asname or a.name).split(".")[0])
+    elif isinstance(n, ast.ExceptHandler) and n.name:
+        defined.add(n.name)
+undefined = sorted({n.id for n in ast.walk(tree) if isinstance(n, ast.Name)
+                    and isinstance(n.ctx, ast.Load) and n.id not in defined})
+problems = []
+if undefined:
+    problems.append("undefined names: " + ", ".join(undefined))
+pro_src = open(SRC, encoding="utf-8").read()
+all_props = set()
+for node in ast.parse(pro_src).body:
+    if isinstance(node, ast.ClassDef) and node.name == "FilterProps":
+        all_props = {st.target.id for st in node.body if isinstance(st, ast.AnnAssign)}
+gone = all_props - LITE_PROPS
+for n in ast.walk(tree):
+    if isinstance(n, ast.Attribute) and n.attr in gone:
+        problems.append("line %d uses removed property .%s" % (n.lineno, n.attr))
+    if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in gone:
+        problems.append("line %d names removed property %r" % (n.lineno, n.value))
+idnames = set(re.findall(r'bl_idname = "(filter\.[a-z_]+)"', src))
+for m in re.finditer(r'"(filter\.[a-z_]+)"', src):
+    if m.group(1) not in idnames:
+        problems.append("operator %s is used but not defined" % m.group(1))
+text = src
+for ok in ALLOWED_CONTEXT:
+    text = text.replace(ok, "")
+for w in FORBIDDEN:
+    for m in re.finditer(r"(?<![A-Za-z])%s(?![A-Za-z])" % re.escape(w), text, re.I if w != "Pro" else 0):
+        ln = text.count("\n", 0, m.start()) + 1
+        problems.append("line %d contains %r: %s" % (ln, w, text.split("\n")[ln - 1].strip()[:100]))
+if problems:
+    os.makedirs(OUT, exist_ok=True)
+    with open(os.path.join(OUT, "__init__.REJECTED.py"), "w", encoding="utf-8") as f:
+        f.write(src)
+    fail("%d problem(s):\n  " % len(problems) + "\n  ".join(problems[:200]))
 
-# ---- write the package ------------------------------------------------------
+# ---- write the package ------------------------------------------------------------
 os.makedirs(OUT, exist_ok=True)
+rej = os.path.join(OUT, "__init__.REJECTED.py")
+if os.path.exists(rej):
+    os.remove(rej)
 with open(os.path.join(OUT, "__init__.py"), "w", encoding="utf-8") as f:
     f.write(src)
 ver = re.search(r'"version": \((\d+), (\d+), (\d+)\)', src).groups()
