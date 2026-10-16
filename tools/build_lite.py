@@ -87,6 +87,11 @@ if mode is not None:
 src = "\n".join(out)
 
 # ---- identity ----------------------------------------------------------------
+# Lite can be released on its own schedule (e.g. a fix only the Extensions platform needs)
+LITE_VERSION = (0, 7, 1)
+src = re.sub(r'"version": \(\d+, \d+, \d+\)', '"version": (%d, %d, %d)' % LITE_VERSION, src, count=1)
+src = re.sub(r'bl_label = "Filter Maker Pro  [0-9.]+"', 'bl_label = "Filter Maker Pro  %d.%d.%d"' % LITE_VERSION,
+             src, count=1)
 src = src.replace('"name": "Filter Maker Pro",', '"name": "Filter Maker Lite",', 1)
 src = re.sub(r'"description": "[^"]*",',
              '"description": "Free pleated filter generator: line, curve, edge and face sources, '
